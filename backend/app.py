@@ -9,7 +9,7 @@ from pathlib import Path
 app = modal.App("arabic-lecture-player")
 
 image = modal.Image.debian_slim(python_version="3.11").pip_install(
-    "yt-dlp",
+    "yt-dlp==2026.3.17",  # pin latest to force image rebuild
     "openai",
     "anthropic",
     "fastapi",
@@ -102,18 +102,29 @@ def process_lecture(job_id: str, youtube_url: str):
 
             # Build list of (label, opts) attempts from most to least specific
             common = {"outtmpl": base_opts["outtmpl"], "postprocessors": base_opts["postprocessors"],
-                      "quiet": False, "progress_hooks": base_opts["progress_hooks"]}
+                      "quiet": False, "progress_hooks": base_opts["progress_hooks"],
+                      "check_formats": False}  # don't pre-verify format URLs
             if cookies_path:
                 common["cookiefile"] = cookies_path
 
+            # Diagnostic: dump raw format list without any processing
+            try:
+                with yt_dlp.YoutubeDL({"quiet": True, "cookiefile": cookies_path} if cookies_path else {"quiet": True}) as ydl:
+                    raw = ydl.extract_info(youtube_url, download=False, process=False)
+                raw_fmts = raw.get("formats") or []
+                sample = ", ".join(f"{f.get('format_id')}({f.get('ext')})" for f in raw_fmts[:6])
+                update("downloading", f"Raw formats ({len(raw_fmts)}): {sample or 'NONE'}")
+            except Exception as e:
+                update("downloading", f"Raw probe error: {str(e)[:120]}")
+
             attempts_opts = [
-                ("tv_embedded+m4a",  {**common, "format": "bestaudio[ext=m4a]/bestaudio/best",
-                                      "extractor_args": {"youtube": {"player_client": ["tv_embedded"]}}}),
-                ("ios+m4a",          {**common, "format": "bestaudio[ext=m4a]/bestaudio/best",
-                                      "extractor_args": {"youtube": {"player_client": ["ios"]}}}),
-                ("web+m4a",          {**common, "format": "bestaudio[ext=m4a]/bestaudio/best",
-                                      "extractor_args": {"youtube": {"player_client": ["web"]}}}),
-                ("bare (no fmt)",    {**common}),   # yt-dlp default, no format or client override
+                ("tv_embedded",  {**common, "format": "bestaudio[ext=m4a]/bestaudio/best",
+                                  "extractor_args": {"youtube": {"player_client": ["tv_embedded"]}}}),
+                ("ios",          {**common, "format": "bestaudio[ext=m4a]/bestaudio/best",
+                                  "extractor_args": {"youtube": {"player_client": ["ios"]}}}),
+                ("web",          {**common, "format": "bestaudio[ext=m4a]/bestaudio/best",
+                                  "extractor_args": {"youtube": {"player_client": ["web"]}}}),
+                ("bare",         {**common}),
             ]
 
             info = None

@@ -26,6 +26,7 @@ STORAGE_PATH = "/storage"
     secrets=[
         modal.Secret.from_name("openai-secret"),
         modal.Secret.from_name("anthropic-secret"),
+        modal.Secret.from_name("youtube-cookies"),
     ],
 )
 def process_lecture(job_id: str, youtube_url: str):
@@ -82,6 +83,14 @@ def process_lecture(job_id: str, youtube_url: str):
                     f"at {d.get('_speed_str', '?').strip()}"
                 ) if d.get("status") == "downloading" else None],
             }
+
+            cookies_txt = os.environ.get("YOUTUBE_COOKIES_TXT", "").strip()
+            if cookies_txt:
+                cookies_path = os.path.join(tmpdir, "cookies.txt")
+                with open(cookies_path, "w") as f:
+                    f.write(cookies_txt)
+                ydl_opts["cookiefile"] = cookies_path
+                update("downloading", "Using YouTube cookies for authentication.")
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(youtube_url, download=True)

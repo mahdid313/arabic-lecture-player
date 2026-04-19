@@ -29,6 +29,7 @@ STORAGE_PATH = "/storage"
     ],
 )
 def process_lecture(job_id: str, youtube_url: str):
+    import time
     import yt_dlp
     from openai import OpenAI
     import anthropic
@@ -37,8 +38,21 @@ def process_lecture(job_id: str, youtube_url: str):
     anthropic_client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
     status_path = Path(STORAGE_PATH) / f"{job_id}_status.json"
-    status_path.write_text(json.dumps({"status": "processing", "step": "downloading"}))
-    volume.commit()
+    start_time = time.time()
+    logs = []
+
+    def update(step: str, message: str):
+        elapsed = round(time.time() - start_time, 1)
+        logs.append({"t": elapsed, "msg": message})
+        status_path.write_text(json.dumps({
+            "status": "processing",
+            "step": step,
+            "logs": logs,
+        }, ensure_ascii=False))
+        volume.commit()
+        print(f"[{elapsed}s] {message}", flush=True)
+
+    update("downloading", "Starting download…")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         audio_path = os.path.join(tmpdir, "audio.mp3")
@@ -51,21 +65,27 @@ def process_lecture(job_id: str, youtube_url: str):
                 "preferredcodec": "mp3",
                 "preferredquality": "128",
             }],
-            "quiet": True,
+            "quiet": False,
+            "progress_hooks": [lambda d: update("downloading",
+                f"Downloading: {d.get('_percent_str', '?').strip()} "
+                f"at {d.get('_speed_str', '?').strip()}"
+            ) if d.get("status") == "downloading" else None],
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(youtube_url, download=True)
             title = info.get("title", "Arabic Lecture")
+            duration = info.get("duration", 0)
 
-        # find the mp3
+        update("downloading", f"Download complete. Title: '{title}', duration: {int(duration//60)}m {int(duration%60)}s")
+
         for f in os.listdir(tmpdir):
             if f.endswith(".mp3"):
                 audio_path = os.path.join(tmpdir, f)
                 break
 
-        status_path.write_text(json.dumps({"status": "processing", "step": "transcribing"}))
-        volume.commit()
+        size_mb = round(os.path.getsize(audio_path) / 1024 / 1024, 1)
+        update("transcribing", f"Audio file: {size_mb} MB. Sending to Whisper…")
 
         with open(audio_path, "rb") as af:
             transcript = openai_client.audio.transcriptions.create(
@@ -78,12 +98,12 @@ def process_lecture(job_id: str, youtube_url: str):
 
         segments = transcript.segments
         words = transcript.words if hasattr(transcript, "words") and transcript.words else []
-
-        status_path.write_text(json.dumps({"status": "processing", "step": "translating"}))
-        volume.commit()
+        update("translating", f"Whisper done. Got {len(segments)} segments, {len(words)} words. Starting translation…")
 
         translated_segments = []
-        for seg in segments:
+        for i, seg in enumerate(segments):
+            if i % 5 == 0:
+                update("translating", f"Translating segment {i+1}/{len(segments)}…")
             response = anthropic_client.messages.create(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=512,
@@ -101,14 +121,7 @@ def process_lecture(job_id: str, youtube_url: str):
                 "english": translation,
             })
 
-        # build word-start lookup keyed by segment
-        word_map = {}
-        if words:
-            for w in words:
-                word_map[round(w.start, 3)] = w.word
-
-        status_path.write_text(json.dumps({"status": "processing", "step": "building_html"}))
-        volume.commit()
+        update("building_html", f"Translation done. Building HTML file…")
 
         with open(audio_path, "rb") as af:
             audio_b64 = base64.b64encode(af.read()).decode("utf-8")
@@ -118,10 +131,13 @@ def process_lecture(job_id: str, youtube_url: str):
         html_path = Path(STORAGE_PATH) / f"{job_id}.html"
         html_path.write_text(html, encoding="utf-8")
 
+        total = round(time.time() - start_time, 1)
+        logs.append({"t": total, "msg": f"Done! Total time: {total}s"})
         status_path.write_text(json.dumps({
             "status": "done",
             "html_filename": f"{job_id}.html",
-        }))
+            "logs": logs,
+        }, ensure_ascii=False))
         volume.commit()
 
 
@@ -297,11 +313,12 @@ def status_endpoint(job_id: str):
         return {"status": "not_found"}
 
     data = json.loads(status_path.read_text())
+    logs = data.get("logs", [])
     if data.get("status") == "done":
         download_url = f"https://mahdid313--download.modal.run?job_id={job_id}"
-        return {"status": "done", "download_url": download_url}
+        return {"status": "done", "download_url": download_url, "logs": logs}
 
-    return {"status": data.get("status", "processing"), "step": data.get("step", "")}
+    return {"status": data.get("status", "processing"), "step": data.get("step", ""), "logs": logs}
 
 
 @app.function(

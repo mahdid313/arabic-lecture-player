@@ -221,6 +221,33 @@ button.secondary {
   padding: 8px 0;
 }
 
+.log-toggle {
+  margin-top: 14px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.log-toggle:hover {
+  color: var(--accent);
+}
+
+.log-output {
+  margin-top: 8px;
+  background: #111;
+  border: 1px solid #2a2a2a;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 0.75rem;
+  font-family: 'Courier New', monospace;
+  color: #7ec8e3;
+  max-height: 220px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 footer {
   padding: 16px;
   text-align: center;

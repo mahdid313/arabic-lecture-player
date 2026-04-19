@@ -8,6 +8,9 @@ const statusStep = document.getElementById("status-step");
 const spinnerEl = document.getElementById("spinner");
 const doneIcon = document.getElementById("done-icon");
 const downloadBtn = document.getElementById("download-btn");
+const logPanel = document.getElementById("log-panel");
+const logToggle = document.getElementById("log-toggle");
+const logOutput = document.getElementById("log-output");
 const historyCard = document.getElementById("history-card");
 const historyList = document.getElementById("history-list");
 const noHistory = document.getElementById("no-history");
@@ -16,6 +19,21 @@ let pollTimer = null;
 let currentJobId = null;
 let notFoundRetries = 0;
 const NOT_FOUND_MAX_RETRIES = 6; // 30s grace period for cold starts
+
+let logOpen = false;
+logToggle.addEventListener("click", () => {
+  logOpen = !logOpen;
+  logOutput.style.display = logOpen ? "block" : "none";
+  logToggle.textContent = (logOpen ? "▼" : "▶") + " Show live log";
+});
+
+function renderLogs(logs) {
+  if (!logs || logs.length === 0) return;
+  logPanel.style.display = "block";
+  const lines = logs.map((e) => `[${String(e.t).padStart(6)}s] ${e.msg}`).join("\n");
+  logOutput.textContent = lines;
+  if (logOpen) logOutput.scrollTop = logOutput.scrollHeight;
+}
 
 const STEP_LABELS = {
   downloading: "Downloading audio…",
@@ -111,6 +129,7 @@ async function pollStatus(jobId, originalUrl) {
     if (!res.ok) return;
     const data = await res.json();
 
+    renderLogs(data.logs);
     if (data.status === "done") {
       clearInterval(pollTimer);
       const history = loadHistory();

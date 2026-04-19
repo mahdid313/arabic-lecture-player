@@ -78,6 +78,8 @@ def process_lecture(job_id: str, youtube_url: str):
                     "preferredquality": "128",
                 }],
                 "quiet": False,
+                # ios client uses a different API endpoint, less strict about datacenter IPs
+                "extractor_args": {"youtube": {"player_client": ["ios", "web"]}},
                 "progress_hooks": [lambda d: update("downloading",
                     f"Downloading: {d.get('_percent_str', '?').strip()} "
                     f"at {d.get('_speed_str', '?').strip()}"
@@ -86,11 +88,15 @@ def process_lecture(job_id: str, youtube_url: str):
 
             cookies_txt = os.environ.get("YOUTUBE_COOKIES_TXT", "").strip()
             if cookies_txt:
+                # Modal may store multi-line values with literal \n — normalise
+                if "\n" not in cookies_txt and "\\n" in cookies_txt:
+                    cookies_txt = cookies_txt.replace("\\n", "\n")
                 cookies_path = os.path.join(tmpdir, "cookies.txt")
                 with open(cookies_path, "w") as f:
                     f.write(cookies_txt)
                 ydl_opts["cookiefile"] = cookies_path
-                update("downloading", "Using YouTube cookies for authentication.")
+                lines = cookies_txt.count("\n")
+                update("downloading", f"Cookies loaded: {lines} lines. Sending to YouTube…")
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(youtube_url, download=True)

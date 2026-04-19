@@ -91,16 +91,11 @@ def process_lecture(job_id: str, youtube_url: str):
             if cookies_txt:
                 if "\n" not in cookies_txt and "\\n" in cookies_txt:
                     cookies_txt = cookies_txt.replace("\\n", "\n")
-                # Filter to YouTube-only — other domains cause "invalid Netscape format" errors
-                yt_lines = [
-                    l for l in cookies_txt.splitlines()
-                    if l.startswith("#") or "youtube.com" in l.lower()
-                ]
-                cookies_txt = "\n".join(yt_lines)
                 cookies_path = os.path.join(tmpdir, "cookies.txt")
-                with open(cookies_path, "w") as f:
-                    f.write(cookies_txt)
-                update("downloading", f"Cookies loaded: {len(yt_lines)} YouTube lines.")
+                _write_cookies(cookies_txt, cookies_path)
+                with open(cookies_path) as f:
+                    n = sum(1 for l in f if not l.startswith("#") and l.strip())
+                update("downloading", f"Cookies ready: {n} YouTube entries.")
 
             # Try clients in order, all with cookies when available
             attempts = ["tv_embedded", "ios", "web"]
@@ -190,6 +185,28 @@ def process_lecture(job_id: str, youtube_url: str):
 
     except Exception as exc:
         fail(f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}")
+
+
+def _write_cookies(raw: str, path: str):
+    """Normalise a cookies.txt export into a strict Netscape file yt-dlp accepts."""
+    out = ["# Netscape HTTP Cookie File"]
+    for line in raw.splitlines():
+        line = line.rstrip("\r")
+        # Strip HttpOnly prefix added by some exporters
+        if line.startswith("#HttpOnly_"):
+            line = line[len("#HttpOnly_"):]
+        if line.startswith("#") or not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) != 7:
+            continue  # skip malformed lines
+        domain, subdomain, path_, secure, expiry, name, value = parts
+        # Netscape format requires TRUE for dot-prefixed domains
+        if domain.startswith("."):
+            subdomain = "TRUE"
+        out.append("\t".join([domain, subdomain, path_, secure, expiry, name, value]))
+    with open(path, "w") as f:
+        f.write("\n".join(out) + "\n")
 
 
 def _build_html(title: str, audio_b64: str, segments: list, words: list) -> str:

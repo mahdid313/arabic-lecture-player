@@ -132,6 +132,39 @@ function escHtml(str) {
 
 // ── Process ───────────────────────────────────────────────────────────────────
 
+// ── Upload ────────────────────────────────────────────────────────────────────
+
+document.getElementById("upload-btn").addEventListener("click", async () => {
+  const fileInput = document.getElementById("audio-file");
+  const progressEl = document.getElementById("upload-progress");
+  const file = fileInput.files[0];
+  if (!file) { fileInput.click(); return; }
+
+  document.getElementById("upload-btn").disabled = true;
+  progressEl.style.display = "block";
+  progressEl.textContent = `Uploading ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)…`;
+  showStatus("Uploading audio…", "This may take a moment for large files.", true);
+
+  try {
+    const form = new FormData();
+    form.append("audio", file);
+    form.append("title", file.name.replace(/\.[^.]+$/, ""));
+    const res = await fetch(CONFIG.UPLOAD_URL, { method: "POST", body: form });
+    if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
+    const data = await res.json();
+    currentJobId = data.job_id;
+    saveJob({ jobId: currentJobId, title: file.name, timestamp: Date.now(), status: "pending" });
+    progressEl.style.display = "none";
+    startPolling(currentJobId, file.name, true);
+  } catch (err) {
+    showError(err.message);
+    progressEl.style.display = "none";
+  }
+  document.getElementById("upload-btn").disabled = false;
+});
+
+// ── Process ───────────────────────────────────────────────────────────────────
+
 processBtn.addEventListener("click", async () => {
   const youtubeUrl = urlInput.value.trim();
   if (!youtubeUrl) { urlInput.focus(); return; }

@@ -9,11 +9,12 @@ from pathlib import Path
 app = modal.App("arabic-lecture-player")
 
 image = modal.Image.debian_slim(python_version="3.11").pip_install(
-    "yt-dlp==2026.3.17",  # pin latest to force image rebuild
+    "yt-dlp==2026.3.17",
     "openai",
     "anthropic",
     "fastapi",
     "uvicorn",
+    "httpx",
 ).apt_install("ffmpeg")
 
 volume = modal.Volume.from_name("arabic-lecture-storage", create_if_missing=True)
@@ -64,93 +65,54 @@ def process_lecture(job_id: str, youtube_url: str):
         print(f"[{elapsed}s] {message}", flush=True)
 
     try:
-        update("downloading", "Starting download…")
+        update("downloading", "Starting download via cobalt.tools…")
 
         with tempfile.TemporaryDirectory() as tmpdir:
             audio_path = os.path.join(tmpdir, "audio.mp3")
 
-            progress_hooks = [lambda d: update("downloading",
-                f"Downloading: {d.get('_percent_str', '?').strip()} "
-                f"at {d.get('_speed_str', '?').strip()}"
-            ) if d.get("status") == "downloading" else None]
-
-            base_opts = {
-                "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
-                "outtmpl": os.path.join(tmpdir, "audio.%(ext)s"),
-                "postprocessors": [{
-                    "key": "FFmpegExtractAudio",
-                    "preferredcodec": "mp3",
-                    "preferredquality": "128",
-                }],
-                "quiet": False,
-                "progress_hooks": progress_hooks,
-            }
-
-            cookies_txt = os.environ.get("YOUTUBE_COOKIES_TXT", "").strip()
-            cookies_path = None
-            if cookies_txt:
-                if "\n" not in cookies_txt and "\\n" in cookies_txt:
-                    cookies_txt = cookies_txt.replace("\\n", "\n")
-                cookies_path = os.path.join(tmpdir, "cookies.txt")
-                _write_cookies(cookies_txt, cookies_path)
-                with open(cookies_path) as f:
-                    n = sum(1 for l in f if not l.startswith("#") and l.strip())
-                update("downloading", f"Cookies ready: {n} YouTube entries.")
-
-            # Try clients in order, all with cookies when available
-            attempts = ["tv_embedded", "ios", "web"]
-
-            # Build list of (label, opts) attempts from most to least specific
-            common = {"outtmpl": base_opts["outtmpl"], "postprocessors": base_opts["postprocessors"],
-                      "quiet": False, "progress_hooks": base_opts["progress_hooks"],
-                      "check_formats": False}  # don't pre-verify format URLs
-            if cookies_path:
-                common["cookiefile"] = cookies_path
-
-            # Diagnostic: dump raw format list without any processing
+            # ── Step 1: get direct audio URL from cobalt.tools ──────────────
+            import httpx, re
+            cobalt_url = None
             try:
-                with yt_dlp.YoutubeDL({"quiet": True, "cookiefile": cookies_path} if cookies_path else {"quiet": True}) as ydl:
-                    raw = ydl.extract_info(youtube_url, download=False, process=False)
-                raw_fmts = raw.get("formats") or []
-                sample = ", ".join(f"{f.get('format_id')}({f.get('ext')})" for f in raw_fmts[:6])
-                update("downloading", f"Raw formats ({len(raw_fmts)}): {sample or 'NONE'}")
+                r = httpx.post(
+                    "https://api.cobalt.tools/",
+                    json={"url": youtube_url, "downloadMode": "audio", "audioFormat": "mp3"},
+                    headers={"Accept": "application/json", "Content-Type": "application/json"},
+                    timeout=30,
+                )
+                cdata = r.json()
+                update("downloading", f"cobalt status: {cdata.get('status')} — {str(cdata)[:120]}")
+                if cdata.get("status") in ("stream", "redirect", "tunnel", "picker"):
+                    cobalt_url = cdata.get("url") or (cdata.get("picker") or [{}])[0].get("url")
             except Exception as e:
-                update("downloading", f"Raw probe error: {str(e)[:120]}")
+                update("downloading", f"cobalt request failed: {e}")
 
-            attempts_opts = [
-                ("tv_embedded",  {**common, "format": "bestaudio[ext=m4a]/bestaudio/best",
-                                  "extractor_args": {"youtube": {"player_client": ["tv_embedded"]}}}),
-                ("ios",          {**common, "format": "bestaudio[ext=m4a]/bestaudio/best",
-                                  "extractor_args": {"youtube": {"player_client": ["ios"]}}}),
-                ("web",          {**common, "format": "bestaudio[ext=m4a]/bestaudio/best",
-                                  "extractor_args": {"youtube": {"player_client": ["web"]}}}),
-                ("bare",         {**common}),
-            ]
-
-            info = None
-            for label, ydl_opts in attempts_opts:
-                update("downloading", f"Trying: {label}…")
+            # ── Step 2: download audio from cobalt URL ───────────────────────
+            if cobalt_url:
+                update("downloading", f"Downloading from cobalt URL…")
+                with httpx.stream("GET", cobalt_url, follow_redirects=True, timeout=120) as resp:
+                    resp.raise_for_status()
+                    total = int(resp.headers.get("content-length", 0))
+                    downloaded = 0
+                    with open(audio_path, "wb") as f:
+                        for chunk in resp.iter_bytes(chunk_size=1024 * 256):
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total:
+                                pct = round(downloaded / total * 100)
+                                if pct % 20 == 0:
+                                    update("downloading", f"Downloading: {pct}%")
+                title = "Arabic Lecture"
+                # get title separately via yt-dlp (info only, no download)
                 try:
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        info = ydl.extract_info(youtube_url, download=True)
-                    update("downloading", f"Success with: {label}")
-                    break
-                except Exception as e:
-                    update("downloading", f"{label} failed: {str(e)[:150]}")
-                    continue
-
-            if info is None:
-                raise RuntimeError("All player clients failed. See log above for details.")
-
-            title = info.get("title", "Arabic Lecture")
-            duration = info.get("duration", 0)
-
-            update("downloading", f"Download complete. Title: '{title}', duration: {int(duration//60)}m {int(duration%60)}s")
-
-            for f in os.listdir(tmpdir):
-                if f.endswith((".mp3", ".m4a", ".webm", ".mp4", ".ogg", ".opus")):
-                    audio_path = os.path.join(tmpdir, f)
-                    break
+                    with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True}) as ydl:
+                        info = ydl.extract_info(youtube_url, download=False)
+                        title = info.get("title", title)
+                except Exception:
+                    pass
+                update("downloading", f"Download complete. Title: '{title}'")
+            else:
+                raise RuntimeError("cobalt.tools could not provide a download URL. Try uploading the audio file directly instead.")
 
             size_mb = round(os.path.getsize(audio_path) / 1024 / 1024, 1)
             update("transcribing", f"Audio file: {size_mb} MB. Sending to Whisper…")
@@ -386,11 +348,107 @@ def process_endpoint(body: dict):
     if not youtube_url:
         return {"error": "youtube_url is required"}, 400
     job_id = str(uuid.uuid4())
-    # Write status immediately so polls before the job starts don't see "not_found"
     status_path = Path(STORAGE_PATH) / f"{job_id}_status.json"
     status_path.write_text(json.dumps({"status": "processing", "step": "queued"}))
     volume.commit()
     process_lecture.spawn(job_id, youtube_url)
+    return {"status": "processing", "job_id": job_id}
+
+
+@app.function(
+    image=image,
+    timeout=600,
+    volumes={STORAGE_PATH: volume},
+    secrets=[
+        modal.Secret.from_name("openai-secret"),
+        modal.Secret.from_name("anthropic-secret"),
+    ],
+)
+def process_uploaded_audio(job_id: str, audio_bytes: bytes, title: str):
+    import time
+    import traceback
+    from openai import OpenAI
+    import anthropic
+
+    openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    anthropic_client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+
+    status_path = Path(STORAGE_PATH) / f"{job_id}_status.json"
+    logs = []
+    start_time = time.time()
+
+    def fail(error_msg):
+        logs.append({"t": round(time.time() - start_time, 1), "msg": f"FAILED: {error_msg}"})
+        status_path.write_text(json.dumps({"status": "failed", "error": error_msg, "logs": logs}, ensure_ascii=False))
+        volume.commit()
+
+    def update(step, message):
+        elapsed = round(time.time() - start_time, 1)
+        logs.append({"t": elapsed, "msg": message})
+        status_path.write_text(json.dumps({"status": "processing", "step": step, "logs": logs}, ensure_ascii=False))
+        volume.commit()
+
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            audio_path = os.path.join(tmpdir, "audio.mp3")
+            with open(audio_path, "wb") as f:
+                f.write(audio_bytes)
+            size_mb = round(len(audio_bytes) / 1024 / 1024, 1)
+            update("transcribing", f"Received {size_mb} MB audio. Sending to Whisper…")
+
+            with open(audio_path, "rb") as af:
+                transcript = openai_client.audio.transcriptions.create(
+                    model="whisper-1", file=af,
+                    response_format="verbose_json",
+                    timestamp_granularities=["word", "segment"],
+                    language="ar",
+                )
+
+            segments = transcript.segments
+            words = transcript.words if hasattr(transcript, "words") and transcript.words else []
+            update("translating", f"Whisper done. {len(segments)} segments. Translating…")
+
+            translated_segments = []
+            for i, seg in enumerate(segments):
+                if i % 5 == 0:
+                    update("translating", f"Translating segment {i+1}/{len(segments)}…")
+                resp = anthropic_client.messages.create(
+                    model="claude-haiku-4-5-20251001", max_tokens=512,
+                    messages=[{"role": "user", "content": f"Translate this Arabic text to clear English for general comprehension. Keep it natural and readable. Return only the translation, nothing else.\n\n{seg.text}"}]
+                )
+                translated_segments.append({"id": seg.id, "start": seg.start, "end": seg.end,
+                                            "arabic": seg.text.strip(), "english": resp.content[0].text.strip()})
+
+            update("building_html", "Translation done. Building HTML…")
+            audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+            html = _build_html(title, audio_b64, translated_segments, words)
+            html_path = Path(STORAGE_PATH) / f"{job_id}.html"
+            html_path.write_text(html, encoding="utf-8")
+
+            total = round(time.time() - start_time, 1)
+            logs.append({"t": total, "msg": f"Done! Total time: {total}s"})
+            status_path.write_text(json.dumps({"status": "done", "html_filename": f"{job_id}.html", "logs": logs}, ensure_ascii=False))
+            volume.commit()
+
+    except Exception as exc:
+        fail(f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}")
+
+
+@app.function(image=image, volumes={STORAGE_PATH: volume})
+@modal.fastapi_endpoint(method="POST", label="upload")
+async def upload_endpoint(request):
+    from fastapi import Request
+    form = await request.form()
+    audio_file = form.get("audio")
+    title = form.get("title", "Arabic Lecture")
+    if not audio_file:
+        return {"error": "audio file required"}
+    audio_bytes = await audio_file.read()
+    job_id = str(uuid.uuid4())
+    status_path = Path(STORAGE_PATH) / f"{job_id}_status.json"
+    status_path.write_text(json.dumps({"status": "processing", "step": "queued"}))
+    volume.commit()
+    process_uploaded_audio.spawn(job_id, audio_bytes, title)
     return {"status": "processing", "job_id": job_id}
 
 

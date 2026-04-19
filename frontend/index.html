@@ -34,6 +34,17 @@
       </div>
     </div>
 
+    <!-- Upload card -->
+    <div class="card">
+      <h2>Upload Audio File</h2>
+      <p style="font-size:0.82rem;color:var(--text-muted);margin-bottom:12px;">If the URL fails, download the audio with <code style="color:#4fa3e0">yt-dlp -x --audio-format mp3 "URL"</code> and upload it here.</p>
+      <div class="input-row">
+        <input type="file" id="audio-file" accept="audio/*,.mp3,.m4a,.webm,.ogg" style="flex:1;background:var(--surface2);border:1px solid #333;border-radius:8px;color:var(--text);padding:10px;font-size:0.88rem;">
+        <button id="upload-btn" class="secondary">Upload</button>
+      </div>
+      <div id="upload-progress" style="display:none;margin-top:10px;font-size:0.82rem;color:var(--text-muted);">Uploading…</div>
+    </div>
+
     <!-- Status card -->
     <div class="card" id="status-card">
       <h2>Status</h2>

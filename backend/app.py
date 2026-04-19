@@ -100,18 +100,32 @@ def process_lecture(job_id: str, youtube_url: str):
             # Try clients in order, all with cookies when available
             attempts = ["tv_embedded", "ios", "web"]
 
+            # Build list of (label, opts) attempts from most to least specific
+            common = {"outtmpl": base_opts["outtmpl"], "postprocessors": base_opts["postprocessors"],
+                      "quiet": False, "progress_hooks": base_opts["progress_hooks"]}
+            if cookies_path:
+                common["cookiefile"] = cookies_path
+
+            attempts_opts = [
+                ("tv_embedded+m4a",  {**common, "format": "bestaudio[ext=m4a]/bestaudio/best",
+                                      "extractor_args": {"youtube": {"player_client": ["tv_embedded"]}}}),
+                ("ios+m4a",          {**common, "format": "bestaudio[ext=m4a]/bestaudio/best",
+                                      "extractor_args": {"youtube": {"player_client": ["ios"]}}}),
+                ("web+m4a",          {**common, "format": "bestaudio[ext=m4a]/bestaudio/best",
+                                      "extractor_args": {"youtube": {"player_client": ["web"]}}}),
+                ("bare (no fmt)",    {**common}),   # yt-dlp default, no format or client override
+            ]
+
             info = None
-            for client in attempts:
-                ydl_opts = {**base_opts, "extractor_args": {"youtube": {"player_client": [client]}}}
-                if cookies_path:
-                    ydl_opts["cookiefile"] = cookies_path
-                update("downloading", f"Trying player client: {client}…")
+            for label, ydl_opts in attempts_opts:
+                update("downloading", f"Trying: {label}…")
                 try:
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         info = ydl.extract_info(youtube_url, download=True)
+                    update("downloading", f"Success with: {label}")
                     break
                 except Exception as e:
-                    update("downloading", f"{client} failed: {str(e)[:120]}")
+                    update("downloading", f"{label} failed: {str(e)[:150]}")
                     continue
 
             if info is None:
@@ -123,7 +137,7 @@ def process_lecture(job_id: str, youtube_url: str):
             update("downloading", f"Download complete. Title: '{title}', duration: {int(duration//60)}m {int(duration%60)}s")
 
             for f in os.listdir(tmpdir):
-                if f.endswith(".mp3"):
+                if f.endswith((".mp3", ".m4a", ".webm", ".mp4", ".ogg", ".opus")):
                     audio_path = os.path.join(tmpdir, f)
                     break
 

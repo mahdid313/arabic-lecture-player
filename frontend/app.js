@@ -170,8 +170,6 @@ async function pollStatus(jobId, originalUrl, isNewJob = false) {
     if (!res.ok) return;
     const data = await res.json();
 
-    renderLogs(data.logs);
-
     if (data.status === "done") {
       clearInterval(pollTimer);
       updateHistoryJob(jobId, { status: "done", downloadUrl: data.download_url });
@@ -201,6 +199,9 @@ async function pollStatus(jobId, originalUrl, isNewJob = false) {
       const stepLabel = STEP_LABELS[data.step] || "Processing…";
       showStatus("Processing lecture…", stepLabel, true);
     }
+
+    // render logs after show* so showStatus() doesn't wipe them
+    renderLogs(data.logs);
   } catch (_) {
     // transient network error, keep polling
   }

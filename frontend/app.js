@@ -18,24 +18,27 @@ const noHistory = document.getElementById("no-history");
 let pollTimer = null;
 let currentJobId = null;
 let notFoundRetries = 0;
-const NOT_FOUND_MAX_RETRIES = 6; // 30s grace period for cold starts
+const NOT_FOUND_MAX_RETRIES = 6;
+
+// ── Log panel ─────────────────────────────────────────────────────────────────
 
 let logOpen = false;
 logToggle.addEventListener("click", () => {
   logOpen = !logOpen;
   logOutput.style.display = logOpen ? "block" : "none";
   logToggle.textContent = (logOpen ? "▼" : "▶") + " Show live log";
+  if (logOpen) logOutput.scrollTop = logOutput.scrollHeight;
 });
 
 function renderLogs(logs) {
   if (!logs || logs.length === 0) return;
   logPanel.style.display = "block";
-  const lines = logs.map((e) => `[${String(e.t).padStart(6)}s] ${e.msg}`).join("\n");
-  logOutput.textContent = lines;
+  logOutput.textContent = logs.map((e) => `[${String(e.t).padStart(6)}s] ${e.msg}`).join("\n");
   if (logOpen) logOutput.scrollTop = logOutput.scrollHeight;
 }
 
 const STEP_LABELS = {
+  queued: "Queued, waiting for worker…",
   downloading: "Downloading audio…",
   transcribing: "Transcribing with Whisper…",
   translating: "Translating with Claude…",
@@ -46,6 +49,14 @@ const STEP_LABELS = {
 
 function loadHistory() {
   return JSON.parse(localStorage.getItem("job_history") || "[]");
+}
+
+function updateHistoryJob(jobId, patch) {
+  const history = loadHistory();
+  const idx = history.findIndex((j) => j.jobId === jobId);
+  if (idx >= 0) Object.assign(history[idx], patch);
+  localStorage.setItem("job_history", JSON.stringify(history));
+  renderHistory();
 }
 
 function saveJob(job) {
@@ -65,21 +76,54 @@ function renderHistory() {
   noHistory.style.display = "none";
   historyCard.style.display = "block";
   historyList.innerHTML = "";
+
   history.forEach((job) => {
     const item = document.createElement("div");
     item.className = "history-item";
     const title = job.title || job.jobId.slice(0, 8);
     const time = new Date(job.timestamp).toLocaleDateString();
+
+    let badge;
+    if (job.status === "done" && job.downloadUrl) {
+      badge = `<a href="${escHtml(job.downloadUrl)}" download class="badge badge-done">↓ Download</a>`;
+    } else if (job.status === "failed") {
+      badge = `<button class="badge badge-failed">✕ Failed</button>`;
+    } else {
+      badge = `<button class="badge badge-pending">⟳ Check</button>`;
+    }
+
     item.innerHTML = `
-      <span class="history-title" title="${escHtml(title)}">${escHtml(title)}</span>
-      <span class="history-time">${time}</span>
-      ${job.downloadUrl
-        ? `<a href="${escHtml(job.downloadUrl)}" download class="history-dl" style="background:var(--accent);color:#fff;border-radius:6px;padding:6px 10px;text-decoration:none;font-size:0.8rem;">↓</a>`
-        : `<span class="history-time">pending</span>`
-      }
+      <div class="history-main">
+        <span class="history-title" title="${escHtml(title)}">${escHtml(title)}</span>
+        <span class="history-time">${time}</span>
+      </div>
+      <div class="history-actions">${badge}</div>
     `;
+
+    // Clicking "Check" resumes polling; clicking "Failed" shows its logs
+    if (job.status !== "done") {
+      item.querySelector("button").addEventListener("click", () => checkJob(job));
+    }
+
     historyList.appendChild(item);
   });
+}
+
+function checkJob(job) {
+  clearInterval(pollTimer);
+  notFoundRetries = 0;
+  currentJobId = job.jobId;
+  processBtn.disabled = true;
+
+  if (job.status === "failed") {
+    showError(job.error || "Unknown error");
+    renderLogs(job.logs || []);
+    processBtn.disabled = false;
+    return;
+  }
+
+  showStatus("Checking status…", "", true);
+  startPolling(job.jobId, job.title);
 }
 
 function escHtml(str) {
@@ -90,10 +134,7 @@ function escHtml(str) {
 
 processBtn.addEventListener("click", async () => {
   const youtubeUrl = urlInput.value.trim();
-  if (!youtubeUrl) {
-    urlInput.focus();
-    return;
-  }
+  if (!youtubeUrl) { urlInput.focus(); return; }
 
   processBtn.disabled = true;
   showStatus("Submitting…", "", true);
@@ -108,7 +149,7 @@ processBtn.addEventListener("click", async () => {
     const data = await res.json();
     currentJobId = data.job_id;
 
-    saveJob({ jobId: currentJobId, title: youtubeUrl, timestamp: Date.now(), downloadUrl: null });
+    saveJob({ jobId: currentJobId, title: youtubeUrl, timestamp: Date.now(), status: "pending" });
     startPolling(currentJobId, youtubeUrl);
   } catch (err) {
     showError(err.message);
@@ -130,26 +171,31 @@ async function pollStatus(jobId, originalUrl) {
     const data = await res.json();
 
     renderLogs(data.logs);
+
     if (data.status === "done") {
       clearInterval(pollTimer);
-      const history = loadHistory();
-      const idx = history.findIndex((j) => j.jobId === jobId);
-      if (idx >= 0) {
-        history[idx].downloadUrl = data.download_url;
-        localStorage.setItem("job_history", JSON.stringify(history));
-        renderHistory();
-      }
+      updateHistoryJob(jobId, { status: "done", downloadUrl: data.download_url });
       showDone(data.download_url);
       processBtn.disabled = false;
+
+    } else if (data.status === "failed") {
+      clearInterval(pollTimer);
+      const errShort = (data.error || "").split("\n")[0];
+      updateHistoryJob(jobId, { status: "failed", error: errShort, logs: data.logs });
+      showError(errShort);
+      processBtn.disabled = false;
+
     } else if (data.status === "not_found") {
       notFoundRetries++;
       if (notFoundRetries >= NOT_FOUND_MAX_RETRIES) {
         clearInterval(pollTimer);
-        showError("Job not found after multiple retries. Please try again.");
+        updateHistoryJob(jobId, { status: "failed", error: "Job not found on server" });
+        showError("Job not found on server after multiple retries.");
         processBtn.disabled = false;
       } else {
         showStatus("Processing lecture…", "Starting up…", true);
       }
+
     } else {
       const stepLabel = STEP_LABELS[data.step] || "Processing…";
       showStatus("Processing lecture…", stepLabel, true);
@@ -166,8 +212,10 @@ function showStatus(main, sub, loading) {
   statusText.textContent = main;
   statusStep.textContent = sub;
   spinnerEl.style.display = loading ? "block" : "none";
-  doneIcon.style.display = loading ? "none" : "block";
+  doneIcon.style.display = "none";
   downloadBtn.style.display = "none";
+  logPanel.style.display = "none";
+  logOutput.textContent = "";
 }
 
 function showDone(downloadUrl) {
@@ -177,16 +225,17 @@ function showDone(downloadUrl) {
   spinnerEl.style.display = "none";
   doneIcon.style.display = "block";
   downloadBtn.style.display = "block";
-  downloadBtn.onclick = () => window.location.href = downloadUrl;
+  downloadBtn.onclick = () => { window.location.href = downloadUrl; };
 }
 
 function showError(msg) {
   statusCard.style.display = "block";
-  statusText.textContent = "Error: " + msg;
-  statusStep.textContent = "Please check the URL and try again.";
+  statusText.textContent = "Failed";
+  statusStep.textContent = msg;
   spinnerEl.style.display = "none";
   doneIcon.style.display = "none";
   downloadBtn.style.display = "none";
+  logPanel.style.display = "block";
 }
 
 // ── Service Worker ────────────────────────────────────────────────────────────

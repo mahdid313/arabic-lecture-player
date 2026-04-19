@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#1a1a1a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Arabic Lecture Player</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <h1>🎧 Arabic Lecture Player</h1>
+    <p>Download YouTube lectures with bilingual transcripts</p>
+  </header>
+
+  <main>
+    <!-- Process card -->
+    <div class="card">
+      <h2>New Lecture</h2>
+      <div class="input-row">
+        <input
+          type="text"
+          id="url-input"
+          placeholder="Paste YouTube URL…"
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="off"
+          spellcheck="false"
+        >
+        <button id="process-btn">Process</button>
+      </div>
+    </div>
+
+    <!-- Status card -->
+    <div class="card" id="status-card">
+      <h2>Status</h2>
+      <div class="status-row">
+        <div class="spinner" id="spinner"></div>
+        <div class="done-icon" id="done-icon" style="display:none">✅</div>
+        <div>
+          <div id="status-text">Waiting…</div>
+          <div id="status-step"></div>
+        </div>
+      </div>
+      <button id="download-btn" style="display:none">⬇ Download Lecture HTML</button>
+    </div>
+
+    <!-- History card -->
+    <div class="card" id="history-card">
+      <h2>Previous Lectures</h2>
+      <div id="history-list"></div>
+    </div>
+    <div id="no-history" style="display:none; text-align:center; color:#555; font-size:0.85rem; padding: 8px 0;">
+      No lectures processed yet.
+    </div>
+  </main>
+
+  <footer>Arabic Lecture Player · Offline-capable PWA</footer>
+
+  <script src="/config.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

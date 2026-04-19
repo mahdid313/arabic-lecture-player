@@ -69,7 +69,12 @@ def process_lecture(job_id: str, youtube_url: str):
         with tempfile.TemporaryDirectory() as tmpdir:
             audio_path = os.path.join(tmpdir, "audio.mp3")
 
-            ydl_opts = {
+            progress_hooks = [lambda d: update("downloading",
+                f"Downloading: {d.get('_percent_str', '?').strip()} "
+                f"at {d.get('_speed_str', '?').strip()}"
+            ) if d.get("status") == "downloading" else None]
+
+            base_opts = {
                 "format": "bestaudio/best",
                 "outtmpl": os.path.join(tmpdir, "audio.%(ext)s"),
                 "postprocessors": [{
@@ -78,30 +83,47 @@ def process_lecture(job_id: str, youtube_url: str):
                     "preferredquality": "128",
                 }],
                 "quiet": False,
-                # ios client uses a different API endpoint, less strict about datacenter IPs
-                "extractor_args": {"youtube": {"player_client": ["ios", "web"]}},
-                "progress_hooks": [lambda d: update("downloading",
-                    f"Downloading: {d.get('_percent_str', '?').strip()} "
-                    f"at {d.get('_speed_str', '?').strip()}"
-                ) if d.get("status") == "downloading" else None],
+                "progress_hooks": progress_hooks,
             }
 
             cookies_txt = os.environ.get("YOUTUBE_COOKIES_TXT", "").strip()
+            cookies_path = None
             if cookies_txt:
-                # Modal may store multi-line values with literal \n — normalise
                 if "\n" not in cookies_txt and "\\n" in cookies_txt:
                     cookies_txt = cookies_txt.replace("\\n", "\n")
                 cookies_path = os.path.join(tmpdir, "cookies.txt")
                 with open(cookies_path, "w") as f:
                     f.write(cookies_txt)
-                ydl_opts["cookiefile"] = cookies_path
                 lines = cookies_txt.count("\n")
-                update("downloading", f"Cookies loaded: {lines} lines. Sending to YouTube…")
+                update("downloading", f"Cookies loaded: {lines} lines.")
 
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(youtube_url, download=True)
-                title = info.get("title", "Arabic Lecture")
-                duration = info.get("duration", 0)
+            # Try clients in order: tv_embedded works on most public videos
+            # without auth; ios+web are fallbacks with cookies
+            attempts = [
+                ("tv_embedded", False),
+                ("ios", True),
+                ("web", True),
+            ]
+
+            info = None
+            for client, needs_cookies in attempts:
+                ydl_opts = {**base_opts, "extractor_args": {"youtube": {"player_client": [client]}}}
+                if needs_cookies and cookies_path:
+                    ydl_opts["cookiefile"] = cookies_path
+                update("downloading", f"Trying player client: {client}…")
+                try:
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(youtube_url, download=True)
+                    break
+                except Exception as e:
+                    update("downloading", f"{client} failed: {str(e)[:120]}")
+                    continue
+
+            if info is None:
+                raise RuntimeError("All player clients failed. See log above for details.")
+
+            title = info.get("title", "Arabic Lecture")
+            duration = info.get("duration", 0)
 
             update("downloading", f"Download complete. Title: '{title}', duration: {int(duration//60)}m {int(duration%60)}s")
 

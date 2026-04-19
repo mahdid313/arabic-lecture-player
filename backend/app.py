@@ -91,24 +91,24 @@ def process_lecture(job_id: str, youtube_url: str):
             if cookies_txt:
                 if "\n" not in cookies_txt and "\\n" in cookies_txt:
                     cookies_txt = cookies_txt.replace("\\n", "\n")
+                # Filter to YouTube-only — other domains cause "invalid Netscape format" errors
+                yt_lines = [
+                    l for l in cookies_txt.splitlines()
+                    if l.startswith("#") or "youtube.com" in l.lower()
+                ]
+                cookies_txt = "\n".join(yt_lines)
                 cookies_path = os.path.join(tmpdir, "cookies.txt")
                 with open(cookies_path, "w") as f:
                     f.write(cookies_txt)
-                lines = cookies_txt.count("\n")
-                update("downloading", f"Cookies loaded: {lines} lines.")
+                update("downloading", f"Cookies loaded: {len(yt_lines)} YouTube lines.")
 
-            # Try clients in order: tv_embedded works on most public videos
-            # without auth; ios+web are fallbacks with cookies
-            attempts = [
-                ("tv_embedded", False),
-                ("ios", True),
-                ("web", True),
-            ]
+            # Try clients in order, all with cookies when available
+            attempts = ["tv_embedded", "ios", "web"]
 
             info = None
-            for client, needs_cookies in attempts:
+            for client in attempts:
                 ydl_opts = {**base_opts, "extractor_args": {"youtube": {"player_client": [client]}}}
-                if needs_cookies and cookies_path:
+                if cookies_path:
                     ydl_opts["cookiefile"] = cookies_path
                 update("downloading", f"Trying player client: {client}…")
                 try:

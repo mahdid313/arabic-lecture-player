@@ -134,6 +134,12 @@ function escHtml(str) {
 
 // ── Upload ────────────────────────────────────────────────────────────────────
 
+// Show filename in drop zone when file selected
+document.getElementById("audio-file")?.addEventListener("change", (e) => {
+  const f = e.target.files[0];
+  document.getElementById("upload-label").textContent = f ? `🎵 ${f.name}` : "📂 Tap to pick an audio file";
+});
+
 document.getElementById("upload-btn")?.addEventListener("click", async () => {
   const fileInput = document.getElementById("audio-file");
   const progressEl = document.getElementById("upload-progress");

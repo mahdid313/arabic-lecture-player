@@ -150,21 +150,21 @@ processBtn.addEventListener("click", async () => {
     currentJobId = data.job_id;
 
     saveJob({ jobId: currentJobId, title: youtubeUrl, timestamp: Date.now(), status: "pending" });
-    startPolling(currentJobId, youtubeUrl);
+    startPolling(currentJobId, youtubeUrl, true);
   } catch (err) {
     showError(err.message);
     processBtn.disabled = false;
   }
 });
 
-function startPolling(jobId, originalUrl) {
+function startPolling(jobId, originalUrl, isNewJob = false) {
   clearInterval(pollTimer);
   notFoundRetries = 0;
-  pollTimer = setInterval(() => pollStatus(jobId, originalUrl), 5000);
-  pollStatus(jobId, originalUrl);
+  pollTimer = setInterval(() => pollStatus(jobId, originalUrl, isNewJob), 5000);
+  pollStatus(jobId, originalUrl, isNewJob);
 }
 
-async function pollStatus(jobId, originalUrl) {
+async function pollStatus(jobId, originalUrl, isNewJob = false) {
   try {
     const res = await fetch(`${CONFIG.STATUS_URL}?job_id=${encodeURIComponent(jobId)}`);
     if (!res.ok) return;
@@ -187,10 +187,11 @@ async function pollStatus(jobId, originalUrl) {
 
     } else if (data.status === "not_found") {
       notFoundRetries++;
-      if (notFoundRetries >= NOT_FOUND_MAX_RETRIES) {
+      const giveUp = !isNewJob || notFoundRetries >= NOT_FOUND_MAX_RETRIES;
+      if (giveUp) {
         clearInterval(pollTimer);
-        updateHistoryJob(jobId, { status: "failed", error: "Job not found on server" });
-        showError("Job not found on server after multiple retries.");
+        updateHistoryJob(jobId, { status: "failed", error: "Job not found on server (may have expired)" });
+        showError("Job not found on server — it may have expired or failed before logging started.");
         processBtn.disabled = false;
       } else {
         showStatus("Processing lecture…", "Starting up…", true);

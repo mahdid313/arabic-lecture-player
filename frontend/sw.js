@@ -1,4 +1,4 @@
-const CACHE_NAME = "arabic-player-v3";
+const CACHE_NAME = "arabic-player-v4";
 const STATIC_ASSETS = ["/", "/index.html", "/app.js", "/styles.css", "/manifest.json", "/config.js"];
 
 self.addEventListener("install", (e) => {
@@ -35,7 +35,12 @@ self.addEventListener("fetch", (e) => {
     );
     return;
   }
+  // Network-first for HTML too so cached pages never get stale JS mismatches
   e.respondWith(
-    caches.match(e.request).then((cached) => cached || fetch(e.request))
+    fetch(e.request).then((res) => {
+      const clone = res.clone();
+      caches.open(CACHE_NAME).then((c) => c.put(e.request, clone));
+      return res;
+    }).catch(() => caches.match(e.request))
   );
 });

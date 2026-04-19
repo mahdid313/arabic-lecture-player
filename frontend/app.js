@@ -134,7 +134,7 @@ function escHtml(str) {
 
 // ── Upload ────────────────────────────────────────────────────────────────────
 
-document.getElementById("upload-btn").addEventListener("click", async () => {
+document.getElementById("upload-btn")?.addEventListener("click", async () => {
   const fileInput = document.getElementById("audio-file");
   const progressEl = document.getElementById("upload-progress");
   const file = fileInput.files[0];

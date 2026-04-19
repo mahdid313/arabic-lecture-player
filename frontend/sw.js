@@ -1,4 +1,4 @@
-const CACHE_NAME = "arabic-player-v1";
+const CACHE_NAME = "arabic-player-v3";
 const STATIC_ASSETS = ["/", "/index.html", "/app.js", "/styles.css", "/manifest.json", "/config.js"];
 
 self.addEventListener("install", (e) => {
@@ -18,10 +18,21 @@ self.addEventListener("activate", (e) => {
 });
 
 self.addEventListener("fetch", (e) => {
-  // Network-first for API calls, cache-first for static assets
   const url = new URL(e.request.url);
-  if (url.hostname.includes("modal.run") || url.hostname.includes("mahdid313")) {
-    e.respondWith(fetch(e.request));
+  // Always go network-first for API calls and JS/CSS so updates are picked up immediately
+  if (
+    url.hostname.includes("modal.run") ||
+    url.hostname.includes("mahdid313") ||
+    url.pathname.endsWith(".js") ||
+    url.pathname.endsWith(".css")
+  ) {
+    e.respondWith(
+      fetch(e.request).then((res) => {
+        const clone = res.clone();
+        caches.open(CACHE_NAME).then((c) => c.put(e.request, clone));
+        return res;
+      }).catch(() => caches.match(e.request))
+    );
     return;
   }
   e.respondWith(

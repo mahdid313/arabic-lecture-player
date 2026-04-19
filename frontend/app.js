@@ -14,6 +14,8 @@ const noHistory = document.getElementById("no-history");
 
 let pollTimer = null;
 let currentJobId = null;
+let notFoundRetries = 0;
+const NOT_FOUND_MAX_RETRIES = 6; // 30s grace period for cold starts
 
 const STEP_LABELS = {
   downloading: "Downloading audio…",
@@ -98,6 +100,7 @@ processBtn.addEventListener("click", async () => {
 
 function startPolling(jobId, originalUrl) {
   clearInterval(pollTimer);
+  notFoundRetries = 0;
   pollTimer = setInterval(() => pollStatus(jobId, originalUrl), 5000);
   pollStatus(jobId, originalUrl);
 }
@@ -120,9 +123,14 @@ async function pollStatus(jobId, originalUrl) {
       showDone(data.download_url);
       processBtn.disabled = false;
     } else if (data.status === "not_found") {
-      clearInterval(pollTimer);
-      showError("Job not found. Please try again.");
-      processBtn.disabled = false;
+      notFoundRetries++;
+      if (notFoundRetries >= NOT_FOUND_MAX_RETRIES) {
+        clearInterval(pollTimer);
+        showError("Job not found after multiple retries. Please try again.");
+        processBtn.disabled = false;
+      } else {
+        showStatus("Processing lecture…", "Starting up…", true);
+      }
     } else {
       const stepLabel = STEP_LABELS[data.step] || "Processing…";
       showStatus("Processing lecture…", stepLabel, true);

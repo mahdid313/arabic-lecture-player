@@ -277,6 +277,10 @@ def process_endpoint(body: dict):
     if not youtube_url:
         return {"error": "youtube_url is required"}, 400
     job_id = str(uuid.uuid4())
+    # Write status immediately so polls before the job starts don't see "not_found"
+    status_path = Path(STORAGE_PATH) / f"{job_id}_status.json"
+    status_path.write_text(json.dumps({"status": "processing", "step": "queued"}))
+    volume.commit()
     process_lecture.spawn(job_id, youtube_url)
     return {"status": "processing", "job_id": job_id}
 

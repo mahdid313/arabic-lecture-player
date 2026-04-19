@@ -75,7 +75,7 @@ def process_lecture(job_id: str, youtube_url: str):
             ) if d.get("status") == "downloading" else None]
 
             base_opts = {
-                "format": "bestaudio/best",
+                "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
                 "outtmpl": os.path.join(tmpdir, "audio.%(ext)s"),
                 "postprocessors": [{
                     "key": "FFmpegExtractAudio",

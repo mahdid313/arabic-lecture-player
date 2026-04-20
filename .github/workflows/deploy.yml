@@ -1,44 +1,18 @@
-name: Deploy
+name: Deploy to Vercel
 
 on:
   push:
     branches: [main]
 
 jobs:
-  deploy-backend:
-    name: Deploy Modal Backend
+  deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install Modal
-        run: pip install modal
-
-      - name: Deploy to Modal
+      - name: Deploy frontend to Vercel
+        working-directory: frontend
+        run: npx vercel --prod --yes --token ${{ secrets.VERCEL_TOKEN }}
         env:
-          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-        run: modal deploy backend/app.py
-
-  deploy-frontend:
-    name: Deploy Frontend to Vercel
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Vercel CLI
-        run: npm install -g vercel
-
-      - name: Deploy to Vercel (production)
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-        run: |
-          cd frontend
-          vercel --prod --token "$VERCEL_TOKEN" --yes
+          VERCEL_ORG_ID: team_5uKHIZCGE6Bka6MyS2wN0zd1
+          VERCEL_PROJECT_ID: prj_s7w0CgxUzjbPHg78WEAvyh24kytR

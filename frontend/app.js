@@ -526,11 +526,12 @@ function startPolling(jobId, title, isNewJob = false) {
   clearInterval(pollTimer);
   notFoundRetries = 0;
   saveActiveJob(jobId, title, "processing");
-  pollTimer = setInterval(() => pollStatus(jobId, title, isNewJob), 5000);
-  pollStatus(jobId, title, isNewJob);
+  const pollStart = Date.now();
+  pollTimer = setInterval(() => pollStatus(jobId, title, isNewJob, pollStart), 5000);
+  pollStatus(jobId, title, isNewJob, pollStart);
 }
 
-async function pollStatus(jobId, title, isNewJob = false) {
+async function pollStatus(jobId, title, isNewJob = false, pollStart = Date.now()) {
   try {
     const res = await fetch(`${CONFIG.STATUS_URL}?job_id=${encodeURIComponent(jobId)}`);
     if (!res.ok) return;
@@ -566,7 +567,16 @@ async function pollStatus(jobId, title, isNewJob = false) {
     } else {
       const stepLabel = STEP_LABELS[data.step] || "Processing…";
       const displayTitle = data.title || data.youtube_url || title || "";
-      showStatus("Processing lecture…", stepLabel, true, displayTitle);
+      const elapsedMin = (Date.now() - pollStart) / 60000;
+      if (elapsedMin > 12) {
+        // Job likely timed out server-side without writing a failure status
+        clearInterval(pollTimer);
+        saveActiveJob(jobId, title, "failed");
+        showError("Processing timed out — click Retry to resume from checkpoint.", jobId, title);
+        processBtn.disabled = false;
+      } else {
+        showStatus("Processing lecture…", stepLabel, true, displayTitle);
+      }
     }
 
     renderLogs(data.logs);

@@ -117,7 +117,7 @@ player.addEventListener('timeupdate', () => {{
 </html>"""
 
 
-def _group_short_segments(segments: list, min_duration: float = 3.0) -> list:
+def _group_short_segments(segments: list, min_duration: float = 15.0) -> list:
     """
     Merge consecutive segments until the group spans at least min_duration seconds.
     Long segments that already meet the threshold are left alone.
@@ -309,20 +309,30 @@ def process_uploaded_audio(job_id: str, title: str):
         def _translate_one(gi_group):
             gi, group = gi_group
             combined = " ".join(s["arabic"] for s in group)
-            resp = anthropic_client.messages.create(
-                model="claude-haiku-4-5-20251001", max_tokens=1024,
-                messages=[{"role": "user", "content":
-                    "You are translating an Arabic Islamic lecture. Translate naturally into clear English "
-                    "for general comprehension. The speaker may use Gulf Arabic dialect. Never add notes, "
-                    "alternatives, or uncertainty — just give the best natural translation. "
-                    "Return only the translation.\n\n" + combined
-                }]
-            )
-            return gi, group, resp
+            delay = 5
+            for attempt in range(6):
+                try:
+                    resp = anthropic_client.messages.create(
+                        model="claude-haiku-4-5-20251001", max_tokens=2048,
+                        messages=[{"role": "user", "content":
+                            "You are translating an Arabic Islamic lecture. Translate naturally into clear English "
+                            "for general comprehension. The speaker may use Gulf Arabic dialect. Never add notes, "
+                            "alternatives, or uncertainty — just give the best natural translation. "
+                            "Return only the translation.\n\n" + combined
+                        }]
+                    )
+                    return gi, group, resp
+                except Exception as e:
+                    if "429" in str(e) and attempt < 5:
+                        import time as _t
+                        _t.sleep(delay)
+                        delay = min(delay * 2, 60)
+                    else:
+                        raise
 
         results = [None] * len(groups)
         completed = 0
-        with ThreadPoolExecutor(max_workers=8) as pool:
+        with ThreadPoolExecutor(max_workers=3) as pool:
             futures = {pool.submit(_translate_one, (gi, group)): gi for gi, group in enumerate(groups)}
             for future in as_completed(futures):
                 gi, group, resp = future.result()

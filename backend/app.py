@@ -382,23 +382,19 @@ def process_endpoint(body: dict):
     return {"status": "processing", "job_id": job_id}
 
 
-@app.function(image=api_image, volumes={STORAGE_PATH: volume})
-@modal.fastapi_endpoint(label="agent")
-async def agent_endpoint(request):
-    """
-    Dual-purpose PC-agent endpoint.
-    GET  → returns pending download jobs (replaces /queue)
-    POST → accepts progress/failure reports from the downloader (replaces /report)
-    """
-    from fastapi import Request
+def _make_agent_app():
+    from fastapi import FastAPI, Request
     from fastapi.responses import JSONResponse
     import time as _time
 
-    if request.method == "GET":
+    _app = FastAPI()
+
+    @_app.get("/")
+    def agent_get():
+        """Return pending download jobs and claim them."""
         volume.reload()
-        storage = Path(STORAGE_PATH)
         pending = []
-        for f in storage.glob("*_status.json"):
+        for f in Path(STORAGE_PATH).glob("*_status.json"):
             try:
                 data = json.loads(f.read_text())
             except Exception:
@@ -415,33 +411,43 @@ async def agent_endpoint(request):
             volume.commit()
         return JSONResponse({"jobs": pending})
 
-    # POST — progress report from PC downloader
-    body = await request.json()
-    job_id = body.get("job_id", "").strip()
-    status = body.get("status", "processing")
-    step   = body.get("step", "downloading")
-    message = body.get("message", "")
-    if not job_id:
-        return {"error": "job_id required"}
-    volume.reload()
-    status_path = Path(STORAGE_PATH) / f"{job_id}_status.json"
-    if not status_path.exists():
-        return {"error": "job not found"}
-    try:
-        data = json.loads(status_path.read_text())
-    except Exception:
-        data = {}
-    logs = data.get("logs", [])
-    logs.append({"t": round(_time.time() % 100000, 1), "msg": message})
-    if status == "failed":
-        data = {"status": "failed", "error": message, "logs": logs,
-                "youtube_url": data.get("youtube_url", "")}
-    else:
-        data = {"status": "processing", "step": step, "logs": logs,
-                "youtube_url": data.get("youtube_url", "")}
-    status_path.write_text(json.dumps(data, ensure_ascii=False))
-    volume.commit()
-    return JSONResponse({"ok": True})
+    @_app.post("/")
+    async def agent_post(request: Request):
+        """Accept progress/failure reports from the PC downloader."""
+        body = await request.json()
+        job_id = body.get("job_id", "").strip()
+        status = body.get("status", "processing")
+        step   = body.get("step", "downloading")
+        message = body.get("message", "")
+        if not job_id:
+            return JSONResponse({"error": "job_id required"})
+        volume.reload()
+        status_path = Path(STORAGE_PATH) / f"{job_id}_status.json"
+        if not status_path.exists():
+            return JSONResponse({"error": "job not found"})
+        try:
+            data = json.loads(status_path.read_text())
+        except Exception:
+            data = {}
+        logs = data.get("logs", [])
+        logs.append({"t": round(_time.time() % 100000, 1), "msg": message})
+        if status == "failed":
+            data = {"status": "failed", "error": message, "logs": logs,
+                    "youtube_url": data.get("youtube_url", "")}
+        else:
+            data = {"status": "processing", "step": step, "logs": logs,
+                    "youtube_url": data.get("youtube_url", "")}
+        status_path.write_text(json.dumps(data, ensure_ascii=False))
+        volume.commit()
+        return JSONResponse({"ok": True})
+
+    return _app
+
+
+@app.function(image=api_image, volumes={STORAGE_PATH: volume})
+@modal.asgi_app(label="agent")
+def agent_endpoint():
+    return _make_agent_app()
 
 
 @app.function(image=api_image, volumes={STORAGE_PATH: volume})

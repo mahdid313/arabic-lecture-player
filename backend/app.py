@@ -292,22 +292,38 @@ def process_uploaded_audio(job_id: str, title: str):
         words = words_list
         update("translating", f"Whisper done. {len(raw_segments)} segments ({round(audio_duration_s/60,1)} min, ${whisper_cost}). Translating…")
 
-        # Group short segments so Claude gets enough context per call
+        # Group segments — 15s minimum keeps batch count manageable
         groups = _group_short_segments(raw_segments, min_duration=15.0)
         update("translating", f"Grouped into {len(groups)} translation batches.")
 
-        # Claude Haiku pricing (claude-haiku-4-5): $0.80 / 1M input, $4.00 / 1M output
+        # Claude Haiku pricing
         HAIKU_IN  = 0.80 / 1_000_000
         HAIKU_OUT = 4.00 / 1_000_000
         total_in_tokens = 0
         total_out_tokens = 0
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        import threading
+        import threading, time as _t
         _token_lock = threading.Lock()
 
+        # Load partial translation checkpoint if it exists
+        xlat_checkpoint_path = Path(STORAGE_PATH) / f"{job_id}_xlat.json"
+        if xlat_checkpoint_path.exists():
+            xc = json.loads(xlat_checkpoint_path.read_text())
+            results = xc.get("results", [None] * len(groups))
+            total_in_tokens  = xc.get("in_tok", 0)
+            total_out_tokens = xc.get("out_tok", 0)
+            already_done = sum(1 for r in results if r is not None)
+            update("translating", f"Resuming translation from batch {already_done}/{len(groups)}…")
+        else:
+            results = [None] * len(groups)
+            already_done = 0
+
+        # Safe parallelism: 3 workers stays well under 50 RPM
         def _translate_one(gi_group):
             gi, group = gi_group
+            if results[gi] is not None:
+                return gi, group, None  # already done in previous run
             combined = " ".join(s["arabic"] for s in group)
             delay = 5
             for attempt in range(6):
@@ -324,30 +340,37 @@ def process_uploaded_audio(job_id: str, title: str):
                     return gi, group, resp
                 except Exception as e:
                     if "429" in str(e) and attempt < 5:
-                        import time as _t
                         _t.sleep(delay)
                         delay = min(delay * 2, 60)
                     else:
                         raise
 
-        results = [None] * len(groups)
-        completed = 0
+        completed = already_done
+        CHECKPOINT_EVERY = 30
         with ThreadPoolExecutor(max_workers=3) as pool:
             futures = {pool.submit(_translate_one, (gi, group)): gi for gi, group in enumerate(groups)}
             for future in as_completed(futures):
                 gi, group, resp = future.result()
-                with _token_lock:
-                    total_in_tokens  += resp.usage.input_tokens
-                    total_out_tokens += resp.usage.output_tokens
-                    completed += 1
-                    if completed % 20 == 0 or completed == len(groups):
-                        update("translating", f"Translating… {completed}/{len(groups)} batches done")
-                translation = resp.content[0].text.strip()
-                parts = _split_translation(translation, group)
-                results[gi] = (group, parts)
+                if resp is not None:
+                    translation = resp.content[0].text.strip()
+                    parts = _split_translation(translation, group)
+                    with _token_lock:
+                        total_in_tokens  += resp.usage.input_tokens
+                        total_out_tokens += resp.usage.output_tokens
+                        completed += 1
+                        results[gi] = parts
+                        if completed % CHECKPOINT_EVERY == 0:
+                            xlat_checkpoint_path.write_text(json.dumps({
+                                "results": results, "in_tok": total_in_tokens,
+                                "out_tok": total_out_tokens,
+                            }, ensure_ascii=False))
+                            volume.commit()
+                        if completed % 10 == 0 or completed == len(groups):
+                            update("translating", f"Translating… {completed}/{len(groups)} batches done")
 
         translated_segments = []
-        for group, parts in results:
+        for gi, group in enumerate(groups):
+            parts = results[gi] or [""] * len(group)
             for seg, eng in zip(group, parts):
                 translated_segments.append({**seg, "english": eng})
 
@@ -361,19 +384,37 @@ def process_uploaded_audio(job_id: str, title: str):
             "claude_usd":      claude_cost,
             "total_usd":       total_cost,
         }
-        update("building_html", f"Translation done. Cost so far: ${total_cost}. Building HTML…")
+        update("building_html", f"Translation done. Cost: ${total_cost}. Generating title…")
 
+        # Auto-generate a meaningful title from the first few translated segments
+        if not title or title in ("Arabic Lecture", "audio"):
+            try:
+                sample = " ".join(s["english"] for s in translated_segments[:10] if s.get("english"))[:800]
+                title_resp = anthropic_client.messages.create(
+                    model="claude-haiku-4-5-20251001", max_tokens=60,
+                    messages=[{"role": "user", "content":
+                        "Based on this excerpt from an Arabic Islamic lecture transcript, write a concise English title "
+                        "(5-8 words max). Return only the title, no quotes or punctuation at the end.\n\n" + sample
+                    }]
+                )
+                generated = title_resp.content[0].text.strip().strip('"').strip("'")
+                if generated:
+                    title = generated
+            except Exception:
+                pass
+
+        update("building_html", f"Building HTML…")
         audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
         html = _build_html(title, audio_b64, translated_segments, words)
         html_path = Path(STORAGE_PATH) / f"{job_id}.html"
         html_path.write_text(html, encoding="utf-8")
 
-        # Clean up audio and transcript checkpoint files
+        # Clean up all job working files
         for p in Path(STORAGE_PATH).glob(f"{job_id}_audio.*"):
             p.unlink(missing_ok=True)
         transcript_path.unlink(missing_ok=True)
+        xlat_checkpoint_path.unlink(missing_ok=True)
 
-        import time as _t
         total_time = round(time.time() - start_time, 1)
         logs.append({"t": total_time, "msg": f"Done! Total time: {total_time}s | Cost: ${total_cost}"})
         status_path.write_text(json.dumps({

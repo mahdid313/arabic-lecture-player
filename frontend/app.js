@@ -256,52 +256,29 @@ async function openPlayer(jobId, title) {
   playerOverlay.classList.add("open");
   history.pushState({ player: true }, "");
 
+  const downloadUrl = `${CONFIG.DOWNLOAD_URL}?job_id=${encodeURIComponent(jobId)}`;
+
   try {
-    let html = await idbGet(jobId);
-    if (html) {
-      playerLoadingTxt.textContent = "Loading from cache…";
+    const cached = await idbGet(jobId);
+    if (cached) {
+      // Instant load from cache
+      const blob = new Blob([cached], { type: "text/html" });
+      lectureFrame.src = URL.createObjectURL(blob);
+      lectureFrame.style.display = "block";
+      playerLoading.classList.remove("visible");
     } else {
-      playerLoadingTxt.textContent = "Connecting…";
-      const res = await fetch(`${CONFIG.DOWNLOAD_URL}?job_id=${encodeURIComponent(jobId)}`);
-      if (!res.ok) throw new Error(`Server returned ${res.status}`);
+      // Load directly from server — browser streams it natively, no JS buffering needed
+      playerLoadingTxt.textContent = "Loading lecture…";
+      lectureFrame.src = downloadUrl;
+      lectureFrame.style.display = "block";
+      lectureFrame.onload = () => playerLoading.classList.remove("visible");
 
-      const total = parseInt(res.headers.get("Content-Length") || "0", 10);
-      const reader = res.body.getReader();
-      const chunks = [];
-      let received = 0;
-      const startTime = Date.now();
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-        received += value.length;
-
-        const elapsed = (Date.now() - startTime) / 1000 || 0.001;
-        const speed = received / elapsed; // bytes/s
-        const mb = (received / 1024 / 1024).toFixed(1);
-
-        if (total) {
-          const pct = Math.min(99, Math.round(received / total * 100));
-          const secsLeft = Math.ceil((total - received) / speed);
-          const timeStr = secsLeft > 60
-            ? `${Math.ceil(secsLeft / 60)}m left`
-            : `${secsLeft}s left`;
-          playerLoadingTxt.textContent = `Downloading… ${pct}% · ${timeStr}`;
-        } else {
-          playerLoadingTxt.textContent = `Downloading… ${mb} MB`;
-        }
-      }
-
-      const blob = new Blob(chunks);
-      html = await blob.text();
-      idbSave(jobId, html);
+      // Cache in background so next open is instant
+      fetch(downloadUrl)
+        .then(r => r.ok ? r.text() : null)
+        .then(html => { if (html) idbSave(jobId, html); })
+        .catch(() => {});
     }
-    const blob = new Blob([html], { type: "text/html" });
-    lectureFrame.src = URL.createObjectURL(blob);
-    lectureFrame.style.display = "block";
-    playerLoading.classList.remove("visible");
-    playerTitleBar.textContent = title || jobId.slice(0, 8);
   } catch (err) {
     playerLoading.classList.remove("visible");
     lectureFrame.style.display = "block";

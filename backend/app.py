@@ -117,20 +117,35 @@ player.addEventListener('timeupdate', () => {{
 </html>"""
 
 
-def _group_short_segments(segments: list, min_duration: float = 15.0) -> list:
-    """
-    Merge consecutive segments until the group spans at least min_duration seconds.
-    Long segments that already meet the threshold are left alone.
-    """
-    groups = []
+def _merge_short_segments(segments: list, min_dur: float = 2.0) -> list:
+    """Merge segments shorter than min_dur seconds into the following segment."""
+    if not segments:
+        return segments
+    result = [dict(s) for s in segments]
     i = 0
-    while i < len(segments):
-        group = [segments[i]]
-        while (group[-1]["end"] - group[0]["start"]) < min_duration and i + 1 < len(segments):
+    while i < len(result) - 1:
+        if (result[i]["end"] - result[i]["start"]) < min_dur:
+            result[i]["end"] = result[i + 1]["end"]
+            result[i]["arabic"] = (result[i]["arabic"] + " " + result[i + 1]["arabic"]).strip()
+            result.pop(i + 1)
+        else:
             i += 1
-            group.append(segments[i])
-        groups.append(group)
-        i += 1
+    return result
+
+
+def _group_by_words(segments: list, target_words: int = 350) -> list:
+    """Group segments into chunks of ~target_words Arabic words."""
+    groups, current, current_wc = [], [], 0
+    for seg in segments:
+        wc = len(seg["arabic"].split())
+        if current and current_wc + wc > int(target_words * 1.3):
+            groups.append(current)
+            current, current_wc = [seg], wc
+        else:
+            current.append(seg)
+            current_wc += wc
+    if current:
+        groups.append(current)
     return groups
 
 
@@ -302,9 +317,10 @@ def process_uploaded_audio(job_id: str, title: str):
         words = words_list
         update("translating", f"Whisper done. {len(raw_segments)} segments ({round(audio_duration_s/60,1)} min, ${whisper_cost}). Translating…")
 
-        # Group segments — 15s minimum keeps batch count manageable
-        groups = _group_short_segments(raw_segments, min_duration=15.0)
-        update("translating", f"Grouped into {len(groups)} translation batches.")
+        # Pre-merge sub-2s fragments, then group into ~350-word chunks
+        clean_segments = _merge_short_segments(raw_segments, min_dur=2.0)
+        groups = _group_by_words(clean_segments, target_words=350)
+        update("translating", f"Grouped into {len(groups)} translation batches ({len(clean_segments)} segments after merging shorts).")
 
         # Claude Haiku pricing
         HAIKU_IN  = 0.80 / 1_000_000
@@ -316,11 +332,25 @@ def process_uploaded_audio(job_id: str, title: str):
         import threading, time as _t
         _token_lock = threading.Lock()
 
+        SYSTEM_PROMPT = (
+            "You are translating a formal Arabic Islamic jurisprudence lecture into English. "
+            "The speaker is a scholar using classical Islamic terminology mixed with spoken Arabic. "
+            "Rules: translate naturally and fluently as if it were originally spoken in English; "
+            "preserve technical Islamic terms in brackets where needed e.g. [illah], [usul]; "
+            "never add notes, alternatives, or uncertainty; "
+            "never leave fragments — always complete the sentence naturally using surrounding context; "
+            "return only the translation with no commentary."
+        )
+
         # Load partial translation checkpoint if it exists
         xlat_checkpoint_path = Path(STORAGE_PATH) / f"{job_id}_xlat.json"
         if xlat_checkpoint_path.exists():
             xc = json.loads(xlat_checkpoint_path.read_text())
             results = xc.get("results", [None] * len(groups))
+            # Invalidate checkpoint if group count changed (e.g. different grouping strategy)
+            if len(results) != len(groups):
+                results = [None] * len(groups)
+                xc = {}
             total_in_tokens  = xc.get("in_tok", 0)
             total_out_tokens = xc.get("out_tok", 0)
             already_done = sum(1 for r in results if r is not None)
@@ -334,18 +364,34 @@ def process_uploaded_audio(job_id: str, title: str):
             gi, group = gi_group
             if results[gi] is not None:
                 return gi, group, None  # already done in previous run
-            combined = " ".join(s["arabic"] for s in group)
+
+            current_text = " ".join(s["arabic"] for s in group)
+
+            # Surrounding context (~60 words each side) so Claude never sees orphaned fragments
+            prev_ctx = ""
+            if gi > 0:
+                prev_words = " ".join(s["arabic"] for s in groups[gi - 1])
+                prev_ctx = " ".join(prev_words.split()[-60:])
+            next_ctx = ""
+            if gi < len(groups) - 1:
+                next_words = " ".join(s["arabic"] for s in groups[gi + 1])
+                next_ctx = " ".join(next_words.split()[:60])
+
+            msg_parts = []
+            if prev_ctx:
+                msg_parts.append(f"[Previous context — do not translate]:\n{prev_ctx}")
+            msg_parts.append(f"[Translate this section]:\n{current_text}")
+            if next_ctx:
+                msg_parts.append(f"[Following context — do not translate]:\n{next_ctx}")
+            prompt = "\n\n".join(msg_parts)
+
             delay = 5
             for attempt in range(6):
                 try:
                     resp = anthropic_client.messages.create(
                         model="claude-haiku-4-5-20251001", max_tokens=2048,
-                        messages=[{"role": "user", "content":
-                            "You are translating an Arabic Islamic lecture. Translate naturally into clear English "
-                            "for general comprehension. The speaker may use Gulf Arabic dialect. Never add notes, "
-                            "alternatives, or uncertainty — just give the best natural translation. "
-                            "Return only the translation.\n\n" + combined
-                        }]
+                        system=SYSTEM_PROMPT,
+                        messages=[{"role": "user", "content": prompt}],
                     )
                     return gi, group, resp
                 except Exception as e:

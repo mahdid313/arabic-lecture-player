@@ -158,7 +158,7 @@ def _split_translation(translation: str, group: list) -> list:
 
 @app.function(
     image=worker_image,
-    timeout=600,
+    timeout=3600,
     volumes={STORAGE_PATH: volume},
     secrets=[
         modal.Secret.from_name("openai-secret"),
@@ -302,10 +302,12 @@ def process_uploaded_audio(job_id: str, title: str):
         total_in_tokens = 0
         total_out_tokens = 0
 
-        translated_segments = []
-        for gi, group in enumerate(groups):
-            if gi % 5 == 0:
-                update("translating", f"Translating batch {gi+1}/{len(groups)}…")
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import threading
+        _token_lock = threading.Lock()
+
+        def _translate_one(gi_group):
+            gi, group = gi_group
             combined = " ".join(s["arabic"] for s in group)
             resp = anthropic_client.messages.create(
                 model="claude-haiku-4-5-20251001", max_tokens=1024,
@@ -316,10 +318,26 @@ def process_uploaded_audio(job_id: str, title: str):
                     "Return only the translation.\n\n" + combined
                 }]
             )
-            total_in_tokens  += resp.usage.input_tokens
-            total_out_tokens += resp.usage.output_tokens
-            translation = resp.content[0].text.strip()
-            parts = _split_translation(translation, group)
+            return gi, group, resp
+
+        results = [None] * len(groups)
+        completed = 0
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {pool.submit(_translate_one, (gi, group)): gi for gi, group in enumerate(groups)}
+            for future in as_completed(futures):
+                gi, group, resp = future.result()
+                with _token_lock:
+                    total_in_tokens  += resp.usage.input_tokens
+                    total_out_tokens += resp.usage.output_tokens
+                    completed += 1
+                    if completed % 20 == 0 or completed == len(groups):
+                        update("translating", f"Translating… {completed}/{len(groups)} batches done")
+                translation = resp.content[0].text.strip()
+                parts = _split_translation(translation, group)
+                results[gi] = (group, parts)
+
+        translated_segments = []
+        for group, parts in results:
             for seg, eng in zip(group, parts):
                 translated_segments.append({**seg, "english": eng})
 

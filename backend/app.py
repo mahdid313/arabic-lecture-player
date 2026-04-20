@@ -587,7 +587,10 @@ def download_endpoint(job_id: str, dl: str = "0"):
     if not html_path.exists():
         return {"error": "file not found"}
     content = html_path.read_text(encoding="utf-8")
-    headers = {"Access-Control-Allow-Origin": "*"}
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": "Content-Length",
+    }
     if dl == "1":
         headers["Content-Disposition"] = f'attachment; filename="lecture-{job_id[:8]}.html"'
     return HTMLResponse(content=content, headers=headers)

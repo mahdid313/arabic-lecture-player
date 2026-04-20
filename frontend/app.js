@@ -254,10 +254,40 @@ async function openPlayer(jobId, title) {
     if (html) {
       playerLoadingTxt.textContent = "Loading from cache…";
     } else {
-      playerLoadingTxt.textContent = "Downloading lecture… (this may take a moment)";
+      playerLoadingTxt.textContent = "Connecting…";
       const res = await fetch(`${CONFIG.DOWNLOAD_URL}?job_id=${encodeURIComponent(jobId)}`);
       if (!res.ok) throw new Error(`Server returned ${res.status}`);
-      html = await res.text();
+
+      const total = parseInt(res.headers.get("Content-Length") || "0", 10);
+      const reader = res.body.getReader();
+      const chunks = [];
+      let received = 0;
+      const startTime = Date.now();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        received += value.length;
+
+        const elapsed = (Date.now() - startTime) / 1000 || 0.001;
+        const speed = received / elapsed; // bytes/s
+        const mb = (received / 1024 / 1024).toFixed(1);
+
+        if (total) {
+          const pct = Math.min(99, Math.round(received / total * 100));
+          const secsLeft = Math.ceil((total - received) / speed);
+          const timeStr = secsLeft > 60
+            ? `${Math.ceil(secsLeft / 60)}m left`
+            : `${secsLeft}s left`;
+          playerLoadingTxt.textContent = `Downloading… ${pct}% · ${timeStr}`;
+        } else {
+          playerLoadingTxt.textContent = `Downloading… ${mb} MB`;
+        }
+      }
+
+      const blob = new Blob(chunks);
+      html = await blob.text();
       idbSave(jobId, html);
     }
     const blob = new Blob([html], { type: "text/html" });

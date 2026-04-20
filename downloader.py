@@ -78,9 +78,12 @@ def upload_audio(job_id, audio_path, title):
 
 def poll_once():
     try:
-        resp = requests.get(AGENT_URL, timeout=15)
+        resp = requests.get(AGENT_URL, timeout=45)
         resp.raise_for_status()
         jobs = resp.json().get("jobs", [])
+    except requests.exceptions.Timeout:
+        print("[queue] poll timed out (Modal cold start?) — will retry", flush=True)
+        return
     except Exception as e:
         print(f"[queue] poll error: {e}", flush=True)
         return

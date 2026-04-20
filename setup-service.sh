@@ -17,6 +17,7 @@ Wants=network-online.target
 
 [Service]
 ExecStart=/usr/bin/python3 $REPO_DIR/downloader.py
+Environment=PATH=/home/$USER/.local/bin:/usr/local/bin:/usr/bin:/bin
 Restart=always
 RestartSec=10
 User=$USER

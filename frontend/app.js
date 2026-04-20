@@ -98,8 +98,13 @@ async function idbGetAll() {
       const req = db.transaction("lectures").objectStore("lectures").openCursor();
       req.onsuccess = e => {
         const c = e.target.result;
-        if (c) { items.push({ jobId: c.key, ts: c.value.ts, size: (c.value.html || "").length }); c.continue(); }
-        else res(items);
+        if (c) {
+          const html = c.value.html || "";
+          const titleMatch = html.match(/<title>([^<]*)<\/title>/i);
+          const title = c.value.title || (titleMatch ? titleMatch[1] : null);
+          items.push({ jobId: c.key, ts: c.value.ts, size: html.length, title });
+          c.continue();
+        } else res(items);
       };
       req.onerror = () => res([]);
     });
@@ -355,8 +360,15 @@ async function loadLibrary() {
 }
 
 async function renderLibrary(lectures, totals, month_totals, year_totals) {
-  const cachedIds = new Set(await idbKeys());
-  if (!lectures || lectures.length === 0) {
+  const cachedItems = await idbGetAll();
+  const cachedIds = new Set(cachedItems.map(x => x.jobId));
+  const serverIds = new Set((lectures || []).map(l => l.job_id));
+
+  // Lectures only in IDB (server doesn't know about them)
+  const offlineOnly = cachedItems.filter(x => !serverIds.has(x.jobId));
+
+  const allEmpty = (!lectures || lectures.length === 0) && offlineOnly.length === 0;
+  if (allEmpty) {
     noLibrary.style.display = "block";
     libraryCard.style.display = "none";
     return;
@@ -412,6 +424,35 @@ async function renderLibrary(lectures, totals, month_totals, year_totals) {
 
     libraryList.appendChild(item);
   });
+
+  // Show offline-only cached lectures (not in server library)
+  if (offlineOnly.length > 0) {
+    const sep = document.createElement("div");
+    sep.style.cssText = "font-size:0.75rem;color:#555;margin:10px 0 6px;";
+    sep.textContent = "Cached locally (not on server):";
+    libraryList.appendChild(sep);
+
+    offlineOnly.sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    offlineOnly.forEach(({ jobId, title, ts }) => {
+      const item = document.createElement("div");
+      item.className = "library-item";
+      const date  = ts ? new Date(ts).toLocaleDateString() : "";
+      const displayTitle = escHtml(title || jobId.slice(0, 8));
+      item.innerHTML = `
+        <div class="library-info">
+          <span class="library-title" title="${displayTitle}">${displayTitle} <span title="Available offline">📥</span></span>
+          <span class="library-date">${date} · offline only</span>
+        </div>
+        <div class="library-actions">
+          <button class="btn-play"  data-job="${escHtml(jobId)}" data-title="${displayTitle}">▶ Play</button>
+        </div>
+      `;
+      item.querySelector(".btn-play").addEventListener("click", (e) => {
+        openPlayer(e.currentTarget.dataset.job, e.currentTarget.dataset.title);
+      });
+      libraryList.appendChild(item);
+    });
+  }
 }
 
 function escHtml(str) {

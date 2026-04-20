@@ -293,7 +293,7 @@ def process_uploaded_audio(job_id: str, title: str):
         update("translating", f"Whisper done. {len(raw_segments)} segments ({round(audio_duration_s/60,1)} min, ${whisper_cost}). Translating…")
 
         # Group short segments so Claude gets enough context per call
-        groups = _group_short_segments(raw_segments, min_duration=3.0)
+        groups = _group_short_segments(raw_segments, min_duration=15.0)
         update("translating", f"Grouped into {len(groups)} translation batches.")
 
         # Claude Haiku pricing (claude-haiku-4-5): $0.80 / 1M input, $4.00 / 1M output

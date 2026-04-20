@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="theme-color" content="#1a1a1a">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -11,67 +11,125 @@
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <header>
-    <h1>🎧 Arabic Lecture Player</h1>
-    <p>Bilingual Arabic transcripts with Whisper + Claude</p>
-  </header>
 
-  <main>
-    <!-- Upload card (primary) -->
-    <div class="card">
-      <h2>Upload Audio</h2>
-      <p class="card-hint">On Android: share the YouTube URL to <strong>Seal</strong> app → download MP3 → pick it below.</p>
-      <label id="upload-drop" class="upload-drop">
-        <input type="file" id="audio-file" accept="audio/*,.mp3,.m4a,.webm,.ogg">
-        <span id="upload-label">📂 Tap to pick an audio file</span>
-      </label>
-      <button id="upload-btn">Process Audio</button>
-      <div id="upload-progress" style="display:none;margin-top:8px;font-size:0.82rem;color:var(--text-muted);">Uploading…</div>
+  <!-- ── Player overlay ─────────────────────────────────── -->
+  <div id="player-overlay">
+    <div id="player-topbar">
+      <span id="player-title-bar" title="Tap to rename"></span>
+      <a id="player-download-btn" href="#" download>↓</a>
     </div>
+    <div id="player-loading">
+      <div class="spinner" style="width:32px;height:32px;border-width:3px;margin-bottom:14px;"></div>
+      <div id="player-loading-text">Loading lecture…</div>
+    </div>
+    <iframe id="lecture-frame" allowfullscreen></iframe>
+  </div>
 
-    <!-- URL card (secondary, for cobalt if it ever works) -->
-    <details class="card">
-      <summary style="cursor:pointer;font-size:0.82rem;color:var(--text-muted);">Try YouTube URL directly (experimental)</summary>
-      <div class="input-row" style="margin-top:12px;">
-        <input
-          type="text"
-          id="url-input"
-          placeholder="Paste YouTube URL…"
-          autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
-        >
-        <button id="process-btn" class="secondary">Process</button>
+  <!-- ── Settings sheet ─────────────────────────────────── -->
+  <div id="settings-overlay">
+    <div id="settings-sheet">
+      <div class="sheet-header">
+        <span>Settings</span>
+        <button id="settings-close">✕</button>
       </div>
-    </details>
 
-    <!-- Status card -->
-    <div class="card" id="status-card">
-      <h2>Status</h2>
-      <div class="status-row">
-        <div class="spinner" id="spinner"></div>
-        <div class="done-icon" id="done-icon" style="display:none">✅</div>
-        <div>
-          <div id="status-text">Waiting…</div>
-          <div id="status-step"></div>
+      <div class="sheet-section">
+        <div class="sheet-section-label">Text Size</div>
+        <div class="font-size-row">
+          <span class="font-size-label">Aa</span>
+          <button class="fs-btn" data-size="90">S</button>
+          <button class="fs-btn" data-size="100">M</button>
+          <button class="fs-btn" data-size="125">L</button>
+          <button class="fs-btn" data-size="150">XL</button>
         </div>
       </div>
-      <button id="download-btn" style="display:none">⬇ Download Lecture HTML</button>
-      <div id="log-panel" style="display:none">
-        <div id="log-toggle" class="log-toggle">▶ Show live log</div>
-        <pre id="log-output" class="log-output" style="display:none"></pre>
+
+      <div class="sheet-section">
+        <div class="sheet-section-label">Offline Cache</div>
+        <p id="cache-size-hint" style="font-size:0.82rem;color:#888;margin-bottom:10px;">Loading…</p>
+        <div id="cache-list"></div>
+        <button id="clear-cache-btn" class="secondary" style="width:100%;margin-top:12px;font-size:0.9rem;padding:10px;">Clear All Cached Lectures</button>
+      </div>
+
+      <div class="sheet-section" style="border-bottom:none;">
+        <p style="font-size:0.75rem;color:#444;line-height:1.6;">Costs are calculated from actual API usage — Whisper charges per minute, Claude charges per token — using published rates. Neither API returns a dollar amount directly.</p>
       </div>
     </div>
+  </div>
 
-    <!-- History card -->
-    <div class="card" id="history-card">
-      <h2>Previous Lectures</h2>
-      <div id="history-list"></div>
-    </div>
-    <div id="no-history" style="display:none; text-align:center; color:#555; font-size:0.85rem; padding: 8px 0;">
-      No lectures processed yet.
-    </div>
-  </main>
+  <!-- ── Main app ───────────────────────────────────────── -->
+  <div id="main-view">
+    <header>
+      <div class="header-row">
+        <div class="header-title">
+          <h1>🎧 Arabic Lecture Player</h1>
+          <p>Bilingual Arabic transcripts with Whisper + Claude</p>
+        </div>
+        <button id="settings-btn" aria-label="Settings">⚙</button>
+      </div>
+    </header>
 
-  <footer>Arabic Lecture Player · PWA</footer>
+    <main>
+      <!-- YouTube URL card -->
+      <div class="card">
+        <h2>YouTube URL</h2>
+        <p class="card-hint">Paste a YouTube URL — your PC will download it automatically.</p>
+        <div class="input-row">
+          <input
+            type="text"
+            id="url-input"
+            placeholder="https://youtube.com/watch?v=…"
+            autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+            inputmode="url"
+          >
+        </div>
+        <button id="process-btn" style="margin-top:10px;width:100%;">Process Lecture</button>
+      </div>
+
+      <!-- Direct upload -->
+      <details class="card">
+        <summary style="cursor:pointer;font-size:0.82rem;color:var(--text-muted);">Or upload an audio file directly</summary>
+        <div style="margin-top:14px;">
+          <label id="upload-drop" class="upload-drop">
+            <input type="file" id="audio-file" accept="audio/*,.mp3,.m4a,.webm,.ogg">
+            <span id="upload-label">📂 Tap to pick an audio file</span>
+          </label>
+          <button id="upload-btn" style="width:100%;">Upload &amp; Process</button>
+          <div id="upload-progress" style="display:none;margin-top:8px;font-size:0.82rem;color:var(--text-muted);">Uploading…</div>
+        </div>
+      </details>
+
+      <!-- Status card -->
+      <div class="card" id="status-card">
+        <h2>Status</h2>
+        <div class="status-row">
+          <div class="spinner" id="spinner"></div>
+          <div class="done-icon" id="done-icon" style="display:none">✅</div>
+          <div>
+            <div id="status-text">Waiting…</div>
+            <div id="status-step"></div>
+          </div>
+        </div>
+        <button id="download-btn" style="display:none">▶ Open Lecture</button>
+        <button id="retry-btn" style="display:none;margin-top:10px;width:100%;background:#2a4a2a;color:#4caf7d;">↺ Retry Processing</button>
+        <div id="log-panel" style="display:none">
+          <div id="log-toggle" class="log-toggle">▶ Show live log</div>
+          <pre id="log-output" class="log-output" style="display:none"></pre>
+        </div>
+      </div>
+
+      <!-- Library card -->
+      <div class="card" id="library-card" style="display:none">
+        <h2>My Lectures</h2>
+        <div id="library-list"></div>
+      </div>
+      <div id="no-library" style="display:none; text-align:center; color:#555; font-size:0.85rem; padding: 8px 0;">
+        No lectures yet.
+      </div>
+    </main>
+
+    <footer>Arabic Lecture Player · PWA</footer>
+  </div>
 
   <script src="/config.js"></script>
   <script src="/app.js"></script>

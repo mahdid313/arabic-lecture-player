@@ -699,39 +699,51 @@ def library_endpoint():
     cur_year  = now.year
     cur_month = now.month
 
+    # Collect all job_ids that have a completed HTML file
+    html_jobs = {f.name.replace(".html", ""): f for f in Path(STORAGE_PATH).glob("*.html")
+                 if not f.name.startswith("test")}
+
+    # Merge: start with status=done entries, then add any html-only jobs
+    seen = set()
+    candidate_ids = []
     for f in Path(STORAGE_PATH).glob("*_status.json"):
+        job_id = f.name.replace("_status.json", "")
         try:
             data = json.loads(f.read_text())
         except Exception:
-            continue
-        if data.get("status") == "done":
-            job_id = f.name.replace("_status.json", "")
-            title = data.get("title", "")
-            if not title:
-                html_path = Path(STORAGE_PATH) / f"{job_id}.html"
-                if html_path.exists():
-                    head = html_path.read_text(encoding="utf-8", errors="ignore")[:400]
-                    m = _re.search(r"<title>(.*?)</title>", head)
-                    title = m.group(1) if m else job_id[:8]
-                else:
-                    title = job_id[:8]
-            costs = data.get("costs", {})
-            ts = data.get("timestamp", 0)
-            lectures.append({"job_id": job_id, "title": title, "timestamp": ts, "costs": costs})
+            data = {}
+        if data.get("status") == "done" or job_id in html_jobs:
+            candidate_ids.append((job_id, data))
+            seen.add(job_id)
+    # Add html-only jobs that had no status.json
+    for job_id in html_jobs:
+        if job_id not in seen:
+            candidate_ids.append((job_id, {}))
 
-            def _add(bucket, c):
-                bucket["whisper_usd"] += c.get("whisper_usd", 0)
-                bucket["claude_usd"]  += c.get("claude_usd", 0)
-                bucket["total_usd"]   += c.get("total_usd", 0)
-                bucket["count"]       += 1
-
-            _add(totals, costs)
-            if ts:
-                dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-                if dt.year == cur_year:
-                    _add(year_totals, costs)
-                    if dt.month == cur_month:
-                        _add(month_totals, costs)
+    for job_id, data in candidate_ids:
+        html_path = Path(STORAGE_PATH) / f"{job_id}.html"
+        if not html_path.exists():
+            continue  # no HTML = not actually done
+        title = data.get("title", "")
+        if not title:
+            head = html_path.read_text(encoding="utf-8", errors="ignore")[:400]
+            m = _re.search(r"<title>(.*?)</title>", head)
+            title = m.group(1) if m else job_id[:8]
+        costs = data.get("costs", {})
+        ts = data.get("timestamp", 0)
+        lectures.append({"job_id": job_id, "title": title, "timestamp": ts, "costs": costs})
+        def _add(bucket, c):
+            bucket["whisper_usd"] += c.get("whisper_usd", 0)
+            bucket["claude_usd"]  += c.get("claude_usd", 0)
+            bucket["total_usd"]   += c.get("total_usd", 0)
+            bucket["count"]       += 1
+        _add(totals, costs)
+        if ts:
+            dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+            if dt.year == cur_year:
+                _add(year_totals, costs)
+                if dt.month == cur_month:
+                    _add(month_totals, costs)
 
     for bucket in (totals, month_totals, year_totals):
         for k in ("whisper_usd", "claude_usd", "total_usd"):

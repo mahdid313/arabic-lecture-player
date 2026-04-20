@@ -179,12 +179,22 @@ def process_uploaded_audio(job_id: str, title: str):
     logs = []
     start_time = time.time()
 
+    def _already_done():
+        try:
+            return json.loads(status_path.read_text()).get("status") == "done"
+        except Exception:
+            return False
+
     def fail(error_msg):
+        if _already_done():
+            return  # never overwrite a completed job
         logs.append({"t": round(time.time() - start_time, 1), "msg": f"FAILED: {error_msg}"})
         status_path.write_text(json.dumps({"status": "failed", "error": error_msg, "logs": logs}, ensure_ascii=False))
         volume.commit()
 
     def update(step, message):
+        if _already_done():
+            return  # never overwrite a completed job
         elapsed = round(time.time() - start_time, 1)
         logs.append({"t": elapsed, "msg": message})
         status_path.write_text(json.dumps({"status": "processing", "step": step, "logs": logs}, ensure_ascii=False))
@@ -384,6 +394,15 @@ def process_uploaded_audio(job_id: str, title: str):
             "claude_usd":      claude_cost,
             "total_usd":       total_cost,
         }
+        # Persist costs now — before building HTML — so they survive any subsequent crash
+        try:
+            status_path.write_text(json.dumps({
+                "status": "processing", "step": "building_html",
+                "costs": costs, "logs": logs,
+            }, ensure_ascii=False))
+            volume.commit()
+        except Exception:
+            pass
         update("building_html", f"Translation done. Cost: ${total_cost}. Generating title…")
 
         # Auto-generate a meaningful title from the first few translated segments

@@ -9,6 +9,8 @@ const spinnerEl   = document.getElementById("spinner");
 const doneIcon    = document.getElementById("done-icon");
 const downloadBtn = document.getElementById("download-btn");
 const retryBtn    = document.getElementById("retry-btn");
+const cancelBtn   = document.getElementById("cancel-btn");
+const statusTitle = document.getElementById("status-title");
 const logPanel    = document.getElementById("log-panel");
 const logToggle   = document.getElementById("log-toggle");
 const logOutput   = document.getElementById("log-output");
@@ -425,7 +427,7 @@ processBtn.addEventListener("click", async () => {
   if (!youtubeUrl) { urlInput.focus(); return; }
 
   processBtn.disabled = true;
-  showStatus("Submitting…", "", true);
+  showStatus("Submitting…", "", true, youtubeUrl);
 
   try {
     const res = await fetch(CONFIG.PROCESS_URL, {
@@ -465,7 +467,7 @@ document.getElementById("upload-btn")?.addEventListener("click", async () => {
 
   uploadBtn.disabled = true;
   progressEl.style.display = "block";
-  showStatus("Uploading audio…", `${sizeMB} MB${totalChunks > 1 ? ` · ${totalChunks} chunks` : ""}`, true);
+  showStatus("Uploading audio…", `${sizeMB} MB${totalChunks > 1 ? ` · ${totalChunks} chunks` : ""}`, true, title);
 
   try {
     for (let i = 0; i < totalChunks; i++) {
@@ -563,7 +565,8 @@ async function pollStatus(jobId, title, isNewJob = false) {
 
     } else {
       const stepLabel = STEP_LABELS[data.step] || "Processing…";
-      showStatus("Processing lecture…", stepLabel, true);
+      const displayTitle = data.title || data.youtube_url || title || "";
+      showStatus("Processing lecture…", stepLabel, true, displayTitle);
     }
 
     renderLogs(data.logs);
@@ -595,9 +598,19 @@ retryBtn.addEventListener("click", async () => {
   }
 });
 
+// ── Cancel ────────────────────────────────────────────────────────────────────
+
+cancelBtn.addEventListener("click", () => {
+  clearInterval(pollTimer);
+  clearActiveJob();
+  statusCard.style.display = "none";
+  processBtn.disabled = false;
+  showToast("Cancelled");
+});
+
 // ── UI helpers ────────────────────────────────────────────────────────────────
 
-function showStatus(main, sub, loading) {
+function showStatus(main, sub, loading, title) {
   statusCard.style.display = "block";
   statusText.textContent = main;
   statusStep.textContent = sub;
@@ -605,11 +618,18 @@ function showStatus(main, sub, loading) {
   doneIcon.style.display = "none";
   downloadBtn.style.display = "none";
   retryBtn.style.display = "none";
+  cancelBtn.style.display = loading ? "block" : "none";
   logPanel.style.display = "none";
   logOutput.textContent = "";
   logOpen = false;
   logOutput.style.display = "none";
   logToggle.textContent = "▶ Show live log";
+  if (title) {
+    statusTitle.textContent = title;
+    statusTitle.style.display = "block";
+  } else {
+    statusTitle.style.display = "none";
+  }
 }
 
 function showDone(downloadUrl, jobId, title) {
@@ -620,6 +640,9 @@ function showDone(downloadUrl, jobId, title) {
   doneIcon.style.display = "block";
   downloadBtn.style.display = "block";
   retryBtn.style.display = "none";
+  cancelBtn.style.display = "none";
+  statusTitle.textContent = title;
+  statusTitle.style.display = title ? "block" : "none";
   downloadBtn.textContent = "▶ Open Lecture";
   downloadBtn.onclick = () => openPlayer(jobId, title);
 }
@@ -631,6 +654,8 @@ function showError(msg, jobId, title) {
   spinnerEl.style.display = "none";
   doneIcon.style.display = "none";
   downloadBtn.style.display = "none";
+  cancelBtn.style.display = "none";
+  statusTitle.style.display = "none";
   logPanel.style.display = "block";
   logOpen = true;
   logOutput.style.display = "block";

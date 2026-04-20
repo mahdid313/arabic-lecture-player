@@ -105,12 +105,14 @@
         <div class="status-row">
           <div class="spinner" id="spinner"></div>
           <div class="done-icon" id="done-icon" style="display:none">✅</div>
-          <div>
+          <div style="flex:1;min-width:0;">
             <div id="status-text">Waiting…</div>
+            <div id="status-title" style="font-size:0.78rem;color:var(--text-muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:none;"></div>
             <div id="status-step"></div>
           </div>
         </div>
         <button id="download-btn" style="display:none">▶ Open Lecture</button>
+        <button id="cancel-btn" style="display:none;margin-top:10px;width:100%;background:#2a1a1a;color:#c07070;">✕ Cancel</button>
         <button id="retry-btn" style="display:none;margin-top:10px;width:100%;background:#2a4a2a;color:#4caf7d;">↺ Retry Processing</button>
         <div id="log-panel" style="display:none">
           <div id="log-toggle" class="log-toggle">▶ Show live log</div>

@@ -521,7 +521,13 @@ def status_endpoint(job_id: str):
     if data.get("status") == "failed":
         return {"status": "failed", "error": data.get("error", "Unknown error"), "logs": logs}
 
-    return {"status": data.get("status", "processing"), "step": data.get("step", ""), "logs": logs}
+    return {
+        "status": data.get("status", "processing"),
+        "step": data.get("step", ""),
+        "title": data.get("title", ""),
+        "youtube_url": data.get("youtube_url", ""),
+        "logs": logs,
+    }
 
 
 @app.function(image=api_image, volumes={STORAGE_PATH: volume})

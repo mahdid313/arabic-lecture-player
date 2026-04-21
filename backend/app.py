@@ -133,12 +133,12 @@ def _merge_short_segments(segments: list, min_dur: float = 2.0) -> list:
     return result
 
 
-def _group_by_words(segments: list, target_words: int = 350) -> list:
+def _group_by_words(segments: list, target_words: int = 120) -> list:
     """Group segments into chunks of ~target_words Arabic words."""
     groups, current, current_wc = [], [], 0
     for seg in segments:
         wc = len(seg["arabic"].split())
-        if current and current_wc + wc > int(target_words * 1.3):
+        if current and current_wc + wc > int(target_words * 1.4):
             groups.append(current)
             current, current_wc = [seg], wc
         else:
@@ -151,23 +151,41 @@ def _group_by_words(segments: list, target_words: int = 350) -> list:
 
 def _split_translation(translation: str, group: list) -> list:
     """
-    Distribute a translated string back across group segments proportionally
-    by the character length of each segment's Arabic text.
+    Distribute translated text back across segments.
+    Splits into sentences first, then assigns by audio duration proportion.
     """
+    import re as _re
     if len(group) == 1:
         return [translation]
-    arabic_lens = [max(len(s["arabic"]), 1) for s in group]
-    total = sum(arabic_lens)
-    words = translation.split()
-    n = len(words)
-    result, idx = [], 0
-    for k, ln in enumerate(arabic_lens):
-        if k == len(arabic_lens) - 1:
-            result.append(" ".join(words[idx:]))
+
+    # Split into sentences; fall back to words if no sentence boundaries found
+    sentences = [s.strip() for s in _re.split(r'(?<=[.!?])\s+', translation.strip()) if s.strip()]
+    if not sentences:
+        sentences = [translation]
+
+    durations = [max(s["end"] - s["start"], 0.1) for s in group]
+    total_dur = sum(durations)
+    n_units = len(sentences)
+
+    result = []
+    pool = list(sentences)
+    for k, dur in enumerate(durations):
+        if k == len(durations) - 1 or not pool:
+            result.append(" ".join(pool))
+            pool = []
         else:
-            take = max(1, round(ln / total * n))
-            result.append(" ".join(words[idx:idx + take]))
-            idx += take
+            remaining_segs = len(durations) - k
+            fraction = dur / total_dur
+            take = max(1, round(fraction * n_units))
+            # Always leave at least one unit per remaining segment
+            take = min(take, len(pool) - (remaining_segs - 1))
+            take = max(take, 1)
+            result.append(" ".join(pool[:take]))
+            pool = pool[take:]
+
+    # Pad with empty strings if pool somehow ran dry early
+    while len(result) < len(group):
+        result.append("")
     return result
 
 
@@ -194,22 +212,29 @@ def process_uploaded_audio(job_id: str, title: str):
     logs = []
     start_time = time.time()
 
+    cancel_path = Path(STORAGE_PATH) / f"{job_id}_cancel"
+
     def _already_done():
         try:
             return json.loads(status_path.read_text()).get("status") == "done"
         except Exception:
             return False
 
+    def _cancelled():
+        return cancel_path.exists()
+
     def fail(error_msg):
         if _already_done():
-            return  # never overwrite a completed job
+            return
         logs.append({"t": round(time.time() - start_time, 1), "msg": f"FAILED: {error_msg}"})
         status_path.write_text(json.dumps({"status": "failed", "error": error_msg, "logs": logs}, ensure_ascii=False))
         volume.commit()
 
     def update(step, message):
         if _already_done():
-            return  # never overwrite a completed job
+            return
+        if _cancelled():
+            raise RuntimeError("Job cancelled — a newer retry is running")
         elapsed = round(time.time() - start_time, 1)
         logs.append({"t": elapsed, "msg": message})
         status_path.write_text(json.dumps({"status": "processing", "step": step, "logs": logs}, ensure_ascii=False))
@@ -221,7 +246,8 @@ def process_uploaded_audio(job_id: str, title: str):
         import subprocess
         import tempfile
 
-        # Check for saved transcript checkpoint (allows resuming after Whisper succeeds)
+        # Clear any cancel flag written by a previous retry request
+        cancel_path.unlink(missing_ok=True)
         volume.reload()
         transcript_path = Path(STORAGE_PATH) / f"{job_id}_transcript.json"
         audio_bytes = None  # loaded lazily below if Whisper needed
@@ -713,6 +739,12 @@ def retry_endpoint(body: dict):
         data = {}
     title = data.get("title", "Arabic Lecture")
     has_transcript = has_checkpoint
+
+    # Signal any currently-running job to stop before spawning the replacement
+    cancel_path = Path(STORAGE_PATH) / f"{job_id}_cancel"
+    cancel_path.write_text("1")
+    volume.commit()
+
     status_path.write_text(json.dumps({
         "status": "processing",
         "step": "translating" if has_transcript else "queued",

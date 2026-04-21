@@ -32,102 +32,91 @@ STORAGE_PATH = "/storage"
 
 
 def _build_html(title: str, audio_b64: str, segments: list, words: list, audio_mime: str = "audio/mp4") -> str:
-    segments_json = json.dumps(segments, ensure_ascii=False)
-    words_json = json.dumps(
-        [{"start": w.start, "end": w.end, "word": w.word} for w in words] if words else [],
-        ensure_ascii=False,
-    )
-    # Audio data is placed in a SECOND script at the very end of the document.
-    # The first script renders the transcript and fires postMessage so the parent
-    # app can hide its loading spinner long before the 20-30 MB audio finishes arriving.
+    import html as _html
+
+    # Pre-render every segment as static HTML so text appears as bytes stream in —
+    # no JS execution needed for display.
+    segs_html = []
+    for i, s in enumerate(segments):
+        ar  = _html.escape(s.get("arabic", ""))
+        en  = _html.escape(s.get("english", ""))
+        t0, t1 = s["start"], s["end"]
+        ts  = f"{int(t0)//60}:{int(t0)%60:02d} – {int(t1)//60}:{int(t1)%60:02d}"
+        segs_html.append(
+            f'<div class="segment" id="seg-{i}" data-s="{t0:.3f}" data-e="{t1:.3f}">'
+            f'<div class="arabic">{ar}</div>'
+            f'<div class="english">{en}</div>'
+            f'<div class="timestamp">{ts}</div>'
+            f'</div>'
+        )
+
+    title_esc   = _html.escape(title)
+    transcript  = "\n".join(segs_html)
+
     return f"""<!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{title}</title>
+<title>{title_esc}</title>
 <style>
-  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{ background: #0f0f0f; color: #e0e0e0; font-family: 'Segoe UI', Arial, sans-serif; min-height: 100vh; }}
-  header {{ background: #1a1a1a; padding: 16px; position: sticky; top: 0; z-index: 10; box-shadow: 0 2px 8px rgba(0,0,0,0.5); }}
-  h1 {{ font-size: 1rem; color: #fff; text-align: center; direction: ltr; margin-bottom: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
-  audio {{ width: 100%; height: 40px; accent-color: #4fa3e0; }}
-  #audio-loading {{ font-size: 0.78rem; color: #4fa3e0; text-align: center; padding: 4px 0 0; letter-spacing: 0.02em; }}
-  #transcript {{ padding: 12px; max-width: 800px; margin: 0 auto; }}
-  .segment {{ background: #1c1c1c; border-radius: 10px; padding: 14px 16px; margin-bottom: 10px; border-right: 3px solid transparent; transition: border-color 0.2s, background 0.2s; cursor: pointer; }}
-  .segment.active {{ background: #1e2d3d; border-right-color: #4fa3e0; }}
-  .arabic {{ font-size: 1.35rem; line-height: 1.7; color: #f0f0f0; text-align: right; direction: rtl; font-family: 'Amiri', 'Traditional Arabic', serif; }}
-  .english {{ font-size: 0.88rem; color: #888; margin-top: 8px; text-align: left; direction: ltr; line-height: 1.5; }}
-  .timestamp {{ font-size: 0.72rem; color: #555; text-align: left; direction: ltr; margin-top: 4px; }}
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+body {{ background: #0f0f0f; color: #e0e0e0; font-family: 'Segoe UI', Arial, sans-serif; min-height: 100vh; }}
+header {{ background: #1a1a1a; padding: 16px; position: sticky; top: 0; z-index: 10; box-shadow: 0 2px 8px rgba(0,0,0,.5); }}
+h1 {{ font-size: 1rem; color: #fff; text-align: center; direction: ltr; margin-bottom: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+audio {{ width: 100%; height: 40px; accent-color: #4fa3e0; }}
+#audio-bar {{ font-size: 0.75rem; color: #4fa3e0; text-align: center; padding: 4px 0 0; }}
+#transcript {{ padding: 12px; max-width: 800px; margin: 0 auto; }}
+.segment {{ background: #1c1c1c; border-radius: 10px; padding: 14px 16px; margin-bottom: 10px; border-right: 3px solid transparent; transition: border-color .2s, background .2s; cursor: pointer; }}
+.segment.active {{ background: #1e2d3d; border-right-color: #4fa3e0; }}
+.arabic {{ font-size: 1.35rem; line-height: 1.7; color: #f0f0f0; text-align: right; direction: rtl; font-family: 'Amiri','Traditional Arabic',serif; }}
+.english {{ font-size: 0.88rem; color: #888; margin-top: 8px; text-align: left; direction: ltr; line-height: 1.5; }}
+.timestamp {{ font-size: 0.72rem; color: #555; text-align: left; direction: ltr; margin-top: 4px; }}
 </style>
 </head>
 <body>
 <header>
-  <h1>{title}</h1>
+  <h1>{title_esc}</h1>
   <audio id="player" controls preload="none"></audio>
-  <div id="audio-loading">⏳ Audio loading…</div>
+  <div id="audio-bar">⏳ Audio loading…</div>
 </header>
-<div id="transcript"></div>
-
-<!-- Transcript script — runs as soon as HTML parser reaches here (before huge audio bytes) -->
+<div id="transcript">
+{transcript}
+</div>
+<!-- Tiny interaction script — runs right after static text is visible -->
 <script>
-const segments = {segments_json};
-const words = {words_json};
-const player = document.getElementById('player');
-const container = document.getElementById('transcript');
-
-function fmt(t) {{
-  const m = Math.floor(t / 60);
-  const s = Math.floor(t % 60).toString().padStart(2, '0');
-  return `${{m}}:${{s}}`;
-}}
-
-segments.forEach((seg, i) => {{
-  const div = document.createElement('div');
-  div.className = 'segment';
-  div.id = `seg-${{i}}`;
-  div.innerHTML = `
-    <div class="arabic">${{seg.arabic}}</div>
-    <div class="english">${{seg.english}}</div>
-    <div class="timestamp">${{fmt(seg.start)}} – ${{fmt(seg.end)}}</div>
-  `;
-  div.addEventListener('click', () => {{ player.currentTime = seg.start; player.play(); }});
-  container.appendChild(div);
-}});
-
-(function() {{
-  const pct = parseInt(localStorage.getItem('font_size_pct') || '125');
+(function(){{
+  var pct = parseInt(localStorage.getItem('font_size_pct')||'125');
   document.documentElement.style.fontSize = pct + '%';
+  var player = document.getElementById('player');
+  var segs   = document.querySelectorAll('.segment');
+  segs.forEach(function(el){{
+    el.addEventListener('click', function(){{
+      player.currentTime = parseFloat(el.dataset.s); player.play();
+    }});
+  }});
+  var last = -1;
+  player.addEventListener('timeupdate', function(){{
+    var t = player.currentTime, active = -1;
+    for(var i=0;i<segs.length;i++){{
+      if(t>=parseFloat(segs[i].dataset.s)&&t<parseFloat(segs[i].dataset.e)){{active=i;break;}}
+    }}
+    if(active===last)return;
+    if(last>=0)segs[last].classList.remove('active');
+    if(active>=0){{segs[active].classList.add('active');segs[active].scrollIntoView({{behavior:'smooth',block:'center'}});}}
+    last=active;
+  }});
+  // Notify parent: transcript is rendered, hide the loading overlay
+  window.parent.postMessage({{type:'lectureReady'}},'*');
 }})();
-
-let lastActive = -1;
-player.addEventListener('timeupdate', () => {{
-  const t = player.currentTime;
-  let active = -1;
-  for (let i = 0; i < segments.length; i++) {{
-    if (t >= segments[i].start && t < segments[i].end) {{ active = i; break; }}
-  }}
-  if (active === lastActive) return;
-  if (lastActive >= 0) document.getElementById(`seg-${{lastActive}}`).classList.remove('active');
-  if (active >= 0) {{
-    const el = document.getElementById(`seg-${{active}}`);
-    el.classList.add('active');
-    el.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
-  }}
-  lastActive = active;
-}});
-
-// Tell parent frame the transcript is visible — parent hides its loading spinner now
-window.parent.postMessage({{ type: 'lectureReady' }}, '*');
 </script>
-
-<!-- Audio script — placed last so the 20-30 MB base64 doesn't delay transcript rendering -->
+<!-- Audio base64 last — 20-30 MB, loads after text is already visible -->
 <script>
-(function() {{
-  var bar = document.getElementById('audio-loading');
-  var p   = document.getElementById('player');
-  p.src = 'data:{audio_mime};base64,{audio_b64}';
-  p.addEventListener('canplay', function() {{ if (bar) bar.style.display = 'none'; }}, {{ once: true }});
+(function(){{
+  var p=document.getElementById('player');
+  var bar=document.getElementById('audio-bar');
+  p.src='data:{audio_mime};base64,{audio_b64}';
+  p.addEventListener('canplay',function(){{if(bar)bar.style.display='none';}},{{once:true}});
 }})();
 </script>
 </body>

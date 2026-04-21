@@ -258,12 +258,17 @@ async function openPlayer(jobId, title) {
 
   const downloadUrl = `${CONFIG.DOWNLOAD_URL}?job_id=${encodeURIComponent(jobId)}`;
 
-  // lectureReady postMessage from inside the iframe hides the spinner the moment
-  // transcript text is rendered (long before the audio base64 finishes arriving).
+  function showFrame() {
+    lectureFrame.style.display = "block";
+    playerLoading.classList.remove("visible");
+  }
+
+  // lectureReady fires from the iframe the moment static text is painted —
+  // well before the 20-30 MB audio base64 at the end of the file arrives.
   function onLectureReady(e) {
     if (e.data?.type === "lectureReady") {
       window.removeEventListener("message", onLectureReady);
-      playerLoading.classList.remove("visible");
+      showFrame();
     }
   }
   window.addEventListener("message", onLectureReady);
@@ -271,23 +276,20 @@ async function openPlayer(jobId, title) {
   try {
     const cached = await idbGet(jobId);
     if (cached) {
-      // Instant from cache — blob URL, onload fires immediately
       playerLoadingTxt.textContent = "Loading from cache…";
       const blob = new Blob([cached], { type: "text/html" });
       lectureFrame.src = URL.createObjectURL(blob);
-      lectureFrame.style.display = "block";
-      lectureFrame.onload = () => playerLoading.classList.remove("visible");
+      // lectureReady postMessage handles it; onload as fallback for old HTML
+      lectureFrame.onload = showFrame;
     } else {
-      // Load directly from server URL — browser streams and renders text progressively.
-      // The iframe posts "lectureReady" once the transcript script executes
-      // (well before the 20 MB audio base64 at the end of the file arrives).
       playerLoadingTxt.textContent = "Loading lecture…";
+      // iframe stays hidden (display:none) — no black flash while waiting for bytes
       lectureFrame.src = downloadUrl;
-      lectureFrame.style.display = "block";
-      // Fallback: hide spinner when full file loads (old-format HTML without postMessage)
-      lectureFrame.onload = () => playerLoading.classList.remove("visible");
+      // lectureReady fires once transcript text is rendered (2-3s after first byte)
+      // onload fallback covers old-format HTML that has no postMessage
+      lectureFrame.onload = showFrame;
 
-      // Cache in background so next open is instant
+      // Cache full HTML in background so next open is instant from IDB
       fetch(downloadUrl)
         .then(r => r.ok ? r.text() : null)
         .then(html => { if (html) idbSave(jobId, html); })
@@ -296,8 +298,7 @@ async function openPlayer(jobId, title) {
     playerTitleBar.textContent = title || jobId.slice(0, 8);
   } catch (err) {
     window.removeEventListener("message", onLectureReady);
-    playerLoading.classList.remove("visible");
-    lectureFrame.style.display = "block";
+    showFrame();
     playerTitleBar.textContent = "Failed to load — " + err.message;
   }
 }

@@ -522,14 +522,16 @@ async function openLectureOptions(jobId, title, isCached, isOfflineOnly) {
   if (!isOfflineOnly) {
     lecOptBody.appendChild(optBtn("🔄", "Reprocess Translation", "", () => {
       if (!confirm("This will re-translate the lecture from scratch using the current prompt. Continue?")) return;
+      // Show status card immediately so the user sees progress
+      showStatus("Reprocessing translation…", "Waiting for worker…", true, title);
+      statusCard.scrollIntoView({ behavior: "smooth", block: "start" });
       fetch(CONFIG.RETRY_URL, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ job_id: jobId, mode: "retranslate" }),
       }).then(r => r.json()).then(d => {
-        if (d.error) { showToast("Error: " + d.error, 4000); return; }
-        showToast("Reprocessing started — check back in a few minutes");
+        if (d.error) { showError("Error: " + d.error); return; }
         startPolling(jobId, title, false);
-      }).catch(() => showToast("Request failed", 3000));
+      }).catch(() => showError("Request failed — check your connection"));
     }));
   }
 

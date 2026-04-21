@@ -1,4 +1,4 @@
-const CACHE_NAME = "arabic-player-v26";
+const CACHE_NAME = "arabic-player-v27";
 const STATIC_ASSETS = ["/", "/index.html", "/app.js", "/styles.css", "/manifest.json", "/config.js", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (e) => {

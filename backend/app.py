@@ -204,7 +204,7 @@ def _split_translation(translation: str, group: list) -> list:
         modal.Secret.from_name("anthropic-secret"),
     ],
 )
-def process_uploaded_audio(job_id: str, title: str):
+def process_uploaded_audio(job_id: str, title: str, mode: str = "full"):
     """Reads audio from Volume (saved by upload_endpoint) and processes it."""
     import time
     import traceback
@@ -344,8 +344,8 @@ def process_uploaded_audio(job_id: str, title: str):
             }, ensure_ascii=False))
             volume.commit()
 
-        # Whisper cost: $0.006 / minute
-        whisper_cost = round(audio_duration_s / 60 * 0.006, 4)
+        # Whisper cost: $0.006 / minute — zero when retranslating (Whisper not re-run)
+        whisper_cost = 0.0 if mode == "retranslate" else round(audio_duration_s / 60 * 0.006, 4)
         words = words_list
         update("translating", f"Whisper done. {len(raw_segments)} segments ({round(audio_duration_s/60,1)} min, ${whisper_cost}). Translating…")
 
@@ -787,7 +787,7 @@ def retry_endpoint(body: dict):
         "logs": [{"t": 0, "msg": msg + (" from transcript checkpoint…" if has_transcript else "…")}],
     }, ensure_ascii=False))
     volume.commit()
-    process_uploaded_audio.spawn(job_id, title)
+    process_uploaded_audio.spawn(job_id, title, mode)
     return {"ok": True, "job_id": job_id, "mode": mode}
 
 

@@ -408,64 +408,50 @@ async function renderLibrary(lectures, totals, month_totals, year_totals) {
     libraryList.appendChild(summary);
   }
 
-  lectures.forEach((lec) => {
+  const makeLibraryItem = (jobId, title, date, cost, isCached, isOfflineOnly) => {
     const item = document.createElement("div");
     item.className = "library-item";
-    const date  = lec.timestamp ? new Date(lec.timestamp * 1000).toLocaleDateString() : "";
-    const title = escHtml(lec.title || lec.job_id.slice(0, 8));
-    const dlUrl = `${CONFIG.DOWNLOAD_URL}?job_id=${encodeURIComponent(lec.job_id)}&dl=1`;
-    const cost    = lec.costs?.total_usd != null ? ` · $${lec.costs.total_usd.toFixed(3)}` : "";
-    const offline = cachedIds.has(lec.job_id) ? ' <span title="Available offline">📥</span>' : "";
-
+    const offline = isCached ? " 📥" : "";
+    const rawTitle = title || jobId.slice(0, 8);
+    const safeTitle = escHtml(rawTitle);
     item.innerHTML = `
       <div class="library-info">
-        <span class="library-title" title="${title}">${title}${offline}</span>
-        <span class="library-date">${date}${cost}</span>
+        <span class="library-title">${safeTitle}${offline}</span>
+        <span class="library-date">${escHtml(date)}${cost}${isOfflineOnly ? " · offline only" : ""}</span>
       </div>
       <div class="library-actions">
-        <button class="btn-play"  data-job="${escHtml(lec.job_id)}" data-title="${title}">▶ Play</button>
-        <button class="btn-share" data-job="${escHtml(lec.job_id)}" data-title="${title}" title="Share">⤴</button>
-        <a class="btn-save" href="${escHtml(dlUrl)}" download="lecture-${lec.job_id.slice(0, 8)}.html" title="Download">↓</a>
+        <button class="btn-play" data-job="${escHtml(jobId)}" data-title="${safeTitle}">▶ Play</button>
+        <button class="btn-options" data-job="${escHtml(jobId)}" data-title="${safeTitle}"
+                data-cached="${isCached}" data-offline="${isOfflineOnly}" title="Options">⋯</button>
       </div>
     `;
-
     item.querySelector(".btn-play").addEventListener("click", (e) => {
       openPlayer(e.currentTarget.dataset.job, e.currentTarget.dataset.title);
     });
-
-    item.querySelector(".btn-share").addEventListener("click", (e) => {
-      shareLecture(e.currentTarget.dataset.job, e.currentTarget.dataset.title);
+    item.querySelector(".btn-options").addEventListener("click", (e) => {
+      const b = e.currentTarget;
+      openLectureOptions(b.dataset.job, b.dataset.title,
+        b.dataset.cached === "true", b.dataset.offline === "true");
     });
+    return item;
+  };
 
-    libraryList.appendChild(item);
+  lectures.forEach((lec) => {
+    const date  = lec.timestamp ? new Date(lec.timestamp * 1000).toLocaleDateString() : "";
+    const title = lec.title || lec.job_id.slice(0, 8);
+    const cost  = lec.costs?.total_usd != null ? ` · $${lec.costs.total_usd.toFixed(3)}` : "";
+    libraryList.appendChild(makeLibraryItem(lec.job_id, title, date, cost, cachedIds.has(lec.job_id), false));
   });
 
-  // Show offline-only cached lectures (not in server library)
   if (offlineOnly.length > 0) {
     const sep = document.createElement("div");
-    sep.style.cssText = "font-size:0.75rem;color:#555;margin:10px 0 6px;";
-    sep.textContent = "Cached locally (not on server):";
+    sep.style.cssText = "font-size:0.75rem;color:#555;margin:10px 0 4px;padding-top:6px;border-top:1px solid #222;";
+    sep.textContent = "Cached locally:";
     libraryList.appendChild(sep);
-
     offlineOnly.sort((a, b) => (b.ts || 0) - (a.ts || 0));
     offlineOnly.forEach(({ jobId, title, ts }) => {
-      const item = document.createElement("div");
-      item.className = "library-item";
-      const date  = ts ? new Date(ts).toLocaleDateString() : "";
-      const displayTitle = escHtml(title || jobId.slice(0, 8));
-      item.innerHTML = `
-        <div class="library-info">
-          <span class="library-title" title="${displayTitle}">${displayTitle} <span title="Available offline">📥</span></span>
-          <span class="library-date">${date} · offline only</span>
-        </div>
-        <div class="library-actions">
-          <button class="btn-play"  data-job="${escHtml(jobId)}" data-title="${displayTitle}">▶ Play</button>
-        </div>
-      `;
-      item.querySelector(".btn-play").addEventListener("click", (e) => {
-        openPlayer(e.currentTarget.dataset.job, e.currentTarget.dataset.title);
-      });
-      libraryList.appendChild(item);
+      const date = ts ? new Date(ts).toLocaleDateString() : "";
+      libraryList.appendChild(makeLibraryItem(jobId, title, date, "", true, true));
     });
   }
 }
@@ -474,6 +460,133 @@ function escHtml(str) {
   return String(str)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;")
     .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// ── Per-lecture options sheet ─────────────────────────────────────────────────
+
+const lecOptOverlay = document.getElementById("lec-opt-overlay");
+const lecOptSheet   = document.getElementById("lec-opt-sheet");
+const lecOptTitle   = document.getElementById("lec-opt-title");
+const lecOptBody    = document.getElementById("lec-opt-body");
+
+document.getElementById("lec-opt-close").addEventListener("click", closeLecOpt);
+lecOptOverlay.addEventListener("click", (e) => { if (e.target === lecOptOverlay) closeLecOpt(); });
+
+function closeLecOpt() { lecOptOverlay.classList.remove("open"); }
+
+function optBtn(icon, label, cls, onClick) {
+  const b = document.createElement("button");
+  b.className = "lec-opt-btn" + (cls ? " " + cls : "");
+  b.innerHTML = `<span class="lec-opt-icon">${icon}</span>${escHtml(label)}`;
+  b.addEventListener("click", () => { closeLecOpt(); onClick(); });
+  return b;
+}
+
+async function openLectureOptions(jobId, title, isCached, isOfflineOnly) {
+  lecOptTitle.textContent = title || jobId.slice(0, 8);
+  lecOptBody.innerHTML = "";
+
+  const dlUrl = `${CONFIG.DOWNLOAD_URL}?job_id=${encodeURIComponent(jobId)}&dl=1`;
+
+  // Play
+  lecOptBody.appendChild(optBtn("▶", "Play", "", () => openPlayer(jobId, title)));
+
+  // Share
+  lecOptBody.appendChild(optBtn("⤴", "Share", "", () => shareLecture(jobId, title)));
+
+  // Rename
+  lecOptBody.appendChild(optBtn("✏️", "Rename", "", () => {
+    const newTitle = prompt("Rename lecture:", title);
+    if (!newTitle || newTitle.trim() === title) return;
+    const trimmed = newTitle.trim();
+    fetch(CONFIG.RENAME_URL, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ job_id: jobId, title: trimmed }),
+    }).then(r => r.json()).then(d => {
+      if (d.error) { showToast("Rename failed: " + d.error, 3000); return; }
+      // Update local library cache
+      try {
+        const c = localStorage.getItem("library_cache");
+        if (c) {
+          const obj = JSON.parse(c);
+          const lec = obj.lectures?.find(l => l.job_id === jobId);
+          if (lec) { lec.title = trimmed; localStorage.setItem("library_cache", JSON.stringify(obj)); }
+        }
+      } catch (_) {}
+      showToast("Renamed!");
+      loadLibrary();
+    }).catch(() => showToast("Rename failed", 3000));
+  }));
+
+  // Reprocess translation (only for server-side lectures)
+  if (!isOfflineOnly) {
+    lecOptBody.appendChild(optBtn("🔄", "Reprocess Translation", "", () => {
+      if (!confirm("This will re-translate the lecture from scratch using the current prompt. Continue?")) return;
+      fetch(CONFIG.RETRY_URL, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_id: jobId, mode: "retranslate" }),
+      }).then(r => r.json()).then(d => {
+        if (d.error) { showToast("Error: " + d.error, 4000); return; }
+        showToast("Reprocessing started — check back in a few minutes");
+        startPolling(jobId, title, false);
+      }).catch(() => showToast("Request failed", 3000));
+    }));
+  }
+
+  // Download HTML
+  if (!isOfflineOnly) {
+    const a = document.createElement("a");
+    a.className = "lec-opt-btn";
+    a.href = dlUrl;
+    a.download = `lecture-${jobId.slice(0, 8)}.html`;
+    a.innerHTML = `<span class="lec-opt-icon">↓</span>Download HTML file`;
+    a.addEventListener("click", closeLecOpt);
+    lecOptBody.appendChild(a);
+  }
+
+  // Remove from cache
+  if (isCached) {
+    lecOptBody.appendChild(optBtn("🗑", "Remove from Cache", "muted", async () => {
+      await idbDelete(jobId);
+      showToast("Removed from cache");
+      loadLibrary();
+    }));
+  }
+
+  // Delete permanently
+  if (!isOfflineOnly) {
+    lecOptBody.appendChild(optBtn("⚠️", "Delete Permanently", "danger", () => {
+      if (!confirm(`Permanently delete "${title}"? This cannot be undone.`)) return;
+      fetch(CONFIG.RENAME_URL, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_id: jobId, action: "delete" }),
+      }).then(r => r.json()).then(d => {
+        if (d.error) { showToast("Delete failed: " + d.error, 3000); return; }
+        idbDelete(jobId);
+        // Remove from local cache
+        try {
+          const c = localStorage.getItem("library_cache");
+          if (c) {
+            const obj = JSON.parse(c);
+            obj.lectures = obj.lectures?.filter(l => l.job_id !== jobId);
+            localStorage.setItem("library_cache", JSON.stringify(obj));
+          }
+        } catch (_) {}
+        showToast("Deleted");
+        loadLibrary();
+      }).catch(() => showToast("Delete failed", 3000));
+    }));
+  } else {
+    // Offline-only: just remove from cache
+    lecOptBody.appendChild(optBtn("⚠️", "Remove from Cache", "danger", async () => {
+      if (!confirm("Remove this lecture from local cache?")) return;
+      await idbDelete(jobId);
+      showToast("Removed");
+      loadLibrary();
+    }));
+  }
+
+  lecOptOverlay.classList.add("open");
 }
 
 // ── YouTube URL submit ────────────────────────────────────────────────────────
@@ -776,66 +889,6 @@ function showToast(msg, duration = 2000) {
   t._timer = setTimeout(() => t.classList.remove("show"), duration);
 }
 
-// ── Rename ────────────────────────────────────────────────────────────────────
-
-function startRename(item, jobId, currentTitle) {
-  const titleSpan = item.querySelector(".library-title");
-  const renameBtn = item.querySelector(".btn-rename");
-  const originalHTML = titleSpan.innerHTML;
-
-  renameBtn.disabled = true;
-  titleSpan.innerHTML = "";
-
-  const input = document.createElement("input");
-  input.type = "text";
-  input.value = currentTitle;
-  input.style.cssText = "flex:1;min-width:0;font-size:0.88rem;padding:4px 8px;border-radius:6px;background:#242424;color:#e0e0e0;border:1px solid var(--accent);outline:none;";
-  titleSpan.appendChild(input);
-  input.focus();
-  input.select();
-
-  async function save() {
-    const newTitle = input.value.trim();
-    if (!newTitle || newTitle === currentTitle) {
-      titleSpan.innerHTML = originalHTML;
-      renameBtn.disabled = false;
-      return;
-    }
-    renameBtn.disabled = true;
-    try {
-      const res = await fetch(CONFIG.RENAME_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ job_id: jobId, title: newTitle }),
-      });
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-
-      try {
-        const cached = localStorage.getItem("library_cache");
-        if (cached) {
-          const obj = JSON.parse(cached);
-          const lec = obj.lectures?.find(l => l.job_id === jobId);
-          if (lec) { lec.title = newTitle; localStorage.setItem("library_cache", JSON.stringify(obj)); }
-        }
-      } catch (_) {}
-
-      item.querySelectorAll("[data-title]").forEach(el => el.dataset.title = newTitle);
-      titleSpan.textContent = newTitle;
-      showToast("Renamed!");
-    } catch (err) {
-      titleSpan.innerHTML = originalHTML;
-      showToast("Rename failed: " + err.message, 3000);
-    }
-    renameBtn.disabled = false;
-  }
-
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); save(); }
-    if (e.key === "Escape") { titleSpan.innerHTML = originalHTML; renameBtn.disabled = false; }
-  });
-  input.addEventListener("blur", save);
-}
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 

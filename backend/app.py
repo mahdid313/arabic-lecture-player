@@ -512,10 +512,8 @@ def process_uploaded_audio(job_id: str, title: str):
         html_path = Path(STORAGE_PATH) / f"{job_id}.html"
         html_path.write_text(html, encoding="utf-8")
 
-        # Clean up all job working files
-        for p in Path(STORAGE_PATH).glob(f"{job_id}_audio.*"):
-            p.unlink(missing_ok=True)
-        transcript_path.unlink(missing_ok=True)
+        # Keep audio + transcript so reprocessing translation is possible without re-uploading.
+        # Only discard the translation checkpoint (no longer needed after success).
         xlat_checkpoint_path.unlink(missing_ok=True)
 
         total_time = round(time.time() - start_time, 1)
@@ -711,22 +709,36 @@ def status_endpoint(job_id: str):
 @app.function(image=api_image, volumes={STORAGE_PATH: volume})
 @modal.fastapi_endpoint(method="POST", label="rename")
 def rename_endpoint(body: dict):
+    from fastapi.responses import JSONResponse
     job_id = body.get("job_id", "").strip()
-    title  = body.get("title", "").strip()
-    if not job_id or not title:
-        return {"error": "job_id and title required"}
+    action = body.get("action", "rename")
     volume.reload()
+
+    if not job_id:
+        return JSONResponse({"error": "job_id required"}, headers={"Access-Control-Allow-Origin": "*"})
+
+    if action == "delete":
+        # Permanently remove all files for this job
+        for f in Path(STORAGE_PATH).glob(f"{job_id}*"):
+            f.unlink(missing_ok=True)
+        volume.commit()
+        return JSONResponse({"ok": True}, headers={"Access-Control-Allow-Origin": "*"})
+
+    # Default: rename
+    title = body.get("title", "").strip()
+    if not title:
+        return JSONResponse({"error": "title required"}, headers={"Access-Control-Allow-Origin": "*"})
     status_path = Path(STORAGE_PATH) / f"{job_id}_status.json"
     if not status_path.exists():
-        return {"error": "job not found"}
+        return JSONResponse({"error": "job not found"}, headers={"Access-Control-Allow-Origin": "*"})
     try:
         data = json.loads(status_path.read_text())
     except Exception:
-        return {"error": "could not read job"}
+        return JSONResponse({"error": "could not read job"}, headers={"Access-Control-Allow-Origin": "*"})
     data["title"] = title
     status_path.write_text(json.dumps(data, ensure_ascii=False))
     volume.commit()
-    return {"ok": True}
+    return JSONResponse({"ok": True}, headers={"Access-Control-Allow-Origin": "*"})
 
 
 @app.function(image=api_image, volumes={STORAGE_PATH: volume})
@@ -751,21 +763,32 @@ def retry_endpoint(body: dict):
         data = {}
     title = data.get("title", "Arabic Lecture")
     has_transcript = has_checkpoint
+    mode = body.get("mode", "retry")  # "retry" | "retranslate"
+
+    if mode == "retranslate":
+        # Redo only the translation step — requires transcript checkpoint
+        if not has_checkpoint:
+            return {"error": "Transcript not available — please re-upload the original audio file."}
+        if not has_audio:
+            return {"error": "Audio file not available — please re-upload the original audio file."}
+        # Clear translation checkpoint so Claude re-translates from scratch
+        (Path(STORAGE_PATH) / f"{job_id}_xlat.json").unlink(missing_ok=True)
 
     # Signal any currently-running job to stop before spawning the replacement
     cancel_path = Path(STORAGE_PATH) / f"{job_id}_cancel"
     cancel_path.write_text("1")
     volume.commit()
 
+    msg = {"retry": "Retrying", "retranslate": "Reprocessing translation"}[mode]
     status_path.write_text(json.dumps({
         "status": "processing",
-        "step": "translating" if has_transcript else "queued",
+        "step": "translating" if (has_transcript or mode == "retranslate") else "queued",
         "title": title,
-        "logs": [{"t": 0, "msg": "Retrying" + (" from transcript checkpoint" if has_transcript else "") + "…"}],
+        "logs": [{"t": 0, "msg": msg + (" from transcript checkpoint…" if has_transcript else "…")}],
     }, ensure_ascii=False))
     volume.commit()
     process_uploaded_audio.spawn(job_id, title)
-    return {"ok": True, "job_id": job_id, "from_checkpoint": has_transcript}
+    return {"ok": True, "job_id": job_id, "mode": mode}
 
 
 @app.function(image=api_image, volumes={STORAGE_PATH: volume})

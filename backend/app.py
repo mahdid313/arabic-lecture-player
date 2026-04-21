@@ -31,12 +31,15 @@ volume = modal.Volume.from_name("arabic-lecture-storage", create_if_missing=True
 STORAGE_PATH = "/storage"
 
 
-def _build_html(title: str, audio_b64: str, segments: list, words: list) -> str:
+def _build_html(title: str, audio_b64: str, segments: list, words: list, audio_mime: str = "audio/mp4") -> str:
     segments_json = json.dumps(segments, ensure_ascii=False)
     words_json = json.dumps(
         [{"start": w.start, "end": w.end, "word": w.word} for w in words] if words else [],
         ensure_ascii=False,
     )
+    # Audio data is placed in a SECOND script at the very end of the document.
+    # The first script renders the transcript and fires postMessage so the parent
+    # app can hide its loading spinner long before the 20-30 MB audio finishes arriving.
     return f"""<!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
@@ -49,6 +52,7 @@ def _build_html(title: str, audio_b64: str, segments: list, words: list) -> str:
   header {{ background: #1a1a1a; padding: 16px; position: sticky; top: 0; z-index: 10; box-shadow: 0 2px 8px rgba(0,0,0,0.5); }}
   h1 {{ font-size: 1rem; color: #fff; text-align: center; direction: ltr; margin-bottom: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
   audio {{ width: 100%; height: 40px; accent-color: #4fa3e0; }}
+  #audio-loading {{ font-size: 0.78rem; color: #4fa3e0; text-align: center; padding: 4px 0 0; letter-spacing: 0.02em; }}
   #transcript {{ padding: 12px; max-width: 800px; margin: 0 auto; }}
   .segment {{ background: #1c1c1c; border-radius: 10px; padding: 14px 16px; margin-bottom: 10px; border-right: 3px solid transparent; transition: border-color 0.2s, background 0.2s; cursor: pointer; }}
   .segment.active {{ background: #1e2d3d; border-right-color: #4fa3e0; }}
@@ -60,11 +64,12 @@ def _build_html(title: str, audio_b64: str, segments: list, words: list) -> str:
 <body>
 <header>
   <h1>{title}</h1>
-  <audio id="player" controls>
-    <source src="data:audio/mp3;base64,{audio_b64}" type="audio/mp3">
-  </audio>
+  <audio id="player" controls preload="none"></audio>
+  <div id="audio-loading">⏳ Audio loading…</div>
 </header>
 <div id="transcript"></div>
+
+<!-- Transcript script — runs as soon as HTML parser reaches here (before huge audio bytes) -->
 <script>
 const segments = {segments_json};
 const words = {words_json};
@@ -90,7 +95,6 @@ segments.forEach((seg, i) => {{
   container.appendChild(div);
 }});
 
-// Apply font size from parent app setting
 (function() {{
   const pct = parseInt(localStorage.getItem('font_size_pct') || '125');
   document.documentElement.style.fontSize = pct + '%';
@@ -112,6 +116,19 @@ player.addEventListener('timeupdate', () => {{
   }}
   lastActive = active;
 }});
+
+// Tell parent frame the transcript is visible — parent hides its loading spinner now
+window.parent.postMessage({{ type: 'lectureReady' }}, '*');
+</script>
+
+<!-- Audio script — placed last so the 20-30 MB base64 doesn't delay transcript rendering -->
+<script>
+(function() {{
+  var bar = document.getElementById('audio-loading');
+  var p   = document.getElementById('player');
+  p.src = 'data:{audio_mime};base64,{audio_b64}';
+  p.addEventListener('canplay', function() {{ if (bar) bar.style.display = 'none'; }}, {{ once: true }});
+}})();
 </script>
 </body>
 </html>"""
@@ -496,7 +513,13 @@ def process_uploaded_audio(job_id: str, title: str):
 
         update("building_html", f"Building HTML…")
         audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
-        html = _build_html(title, audio_b64, translated_segments, words)
+        # Determine MIME from the audio file extension
+        audio_candidates = list(Path(STORAGE_PATH).glob(f"{job_id}_audio.*"))
+        _ext = audio_candidates[0].suffix.lower() if audio_candidates else ".m4a"
+        _mime_map = {".m4a": "audio/mp4", ".mp4": "audio/mp4", ".webm": "audio/webm",
+                     ".ogg": "audio/ogg", ".mp3": "audio/mpeg", ".wav": "audio/wav"}
+        audio_mime = _mime_map.get(_ext, "audio/mp4")
+        html = _build_html(title, audio_b64, translated_segments, words, audio_mime)
         html_path = Path(STORAGE_PATH) / f"{job_id}.html"
         html_path.write_text(html, encoding="utf-8")
 

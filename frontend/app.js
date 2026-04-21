@@ -263,8 +263,7 @@ async function openPlayer(jobId, title) {
     playerLoading.classList.remove("visible");
   }
 
-  // lectureReady fires from the iframe the moment static text is painted —
-  // well before the 20-30 MB audio base64 at the end of the file arrives.
+  // lectureReady fires from inside the iframe once static transcript text is painted.
   function onLectureReady(e) {
     if (e.data?.type === "lectureReady") {
       window.removeEventListener("message", onLectureReady);
@@ -279,21 +278,43 @@ async function openPlayer(jobId, title) {
       playerLoadingTxt.textContent = "Loading from cache…";
       const blob = new Blob([cached], { type: "text/html" });
       lectureFrame.src = URL.createObjectURL(blob);
-      // lectureReady postMessage handles it; onload as fallback for old HTML
-      lectureFrame.onload = showFrame;
+      lectureFrame.onload = showFrame; // blob loads instantly; postMessage also fires
     } else {
-      playerLoadingTxt.textContent = "Loading lecture…";
-      // iframe stays hidden (display:none) — no black flash while waiting for bytes
-      lectureFrame.src = downloadUrl;
-      // lectureReady fires once transcript text is rendered (2-3s after first byte)
-      // onload fallback covers old-format HTML that has no postMessage
-      lectureFrame.onload = showFrame;
+      // Stream from server with progress bar, then set a blob URL.
+      // Blob URLs never add to the browser's session history (unlike external URLs),
+      // so back always returns home in one swipe.
+      playerLoadingTxt.textContent = "Connecting…";
+      const res = await fetch(downloadUrl);
+      if (!res.ok) throw new Error(`Server returned ${res.status}`);
 
-      // Cache full HTML in background so next open is instant from IDB
-      fetch(downloadUrl)
-        .then(r => r.ok ? r.text() : null)
-        .then(html => { if (html) idbSave(jobId, html); })
-        .catch(() => {});
+      const total = parseInt(res.headers.get("Content-Length") || "0", 10);
+      const reader = res.body.getReader();
+      const chunks = [];
+      let received = 0;
+      const startTime = Date.now();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        received += value.length;
+        const elapsed = (Date.now() - startTime) / 1000 || 0.001;
+        const speed = received / elapsed;
+        if (total) {
+          const pct = Math.min(99, Math.round(received / total * 100));
+          const secsLeft = Math.ceil((total - received) / speed);
+          const timeStr = secsLeft > 60 ? `${Math.ceil(secsLeft / 60)}m left` : `${secsLeft}s left`;
+          playerLoadingTxt.textContent = `Downloading… ${pct}% · ${timeStr}`;
+        } else {
+          playerLoadingTxt.textContent = `Downloading… ${(received / 1024 / 1024).toFixed(1)} MB`;
+        }
+      }
+
+      const html = await new Blob(chunks).text();
+      idbSave(jobId, html);
+      const blob = new Blob([html], { type: "text/html" });
+      lectureFrame.src = URL.createObjectURL(blob);
+      // Static HTML renders instantly from blob; postMessage + onload both fire fast
+      lectureFrame.onload = showFrame;
     }
     playerTitleBar.textContent = title || jobId.slice(0, 8);
   } catch (err) {
